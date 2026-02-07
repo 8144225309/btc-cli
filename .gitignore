@@ -1,0 +1,10 @@
+# Compiled files
+*.o
+btc-cli
+
+# Editor backups
+*~
+*.swp
+
+# Claude settings (local)
+.claude/
