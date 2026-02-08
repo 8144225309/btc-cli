@@ -20,7 +20,7 @@
 #include "json.h"
 #include "fallback.h"
 
-#define BTC_CLI_VERSION "1.0.0"
+#define BTC_CLI_VERSION "0.8.0"
 
 /* ANSI color codes */
 #define C_RESET   "\033[0m"
