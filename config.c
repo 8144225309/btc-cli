@@ -98,6 +98,58 @@ static int parse_option(Config *cfg, const char *arg)
 		cfg->color = COLOR_NEVER;
 		return 1;
 	}
+	if (strcmp(arg, "-verify") == 0) {
+		cfg->verify = 1;
+		return 1;
+	}
+	if (strncmp(arg, "-verify-peers=", 14) == 0) {
+		cfg->verify_peers = atoi(arg + 14);
+		if (cfg->verify_peers < 1) cfg->verify_peers = 1;
+		if (cfg->verify_peers > 10) cfg->verify_peers = 10;
+		return 1;
+	}
+
+	/* Fallback broadcast flags */
+	if (strcmp(arg, "-fallback-mempool-space") == 0) {
+		cfg->fallback.mempool_space = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-fallback-blockstream") == 0) {
+		cfg->fallback.blockstream = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-fallback-blockchair") == 0) {
+		cfg->fallback.blockchair = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-fallback-blockchain-info") == 0) {
+		cfg->fallback.blockchain_info = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-fallback-blockcypher") == 0) {
+		cfg->fallback.blockcypher = 1;
+		return 1;
+	}
+	if (strncmp(arg, "-fallback-esplora=", 18) == 0) {
+		strncpy(cfg->fallback.esplora_url, arg + 18,
+		        sizeof(cfg->fallback.esplora_url) - 1);
+		return 1;
+	}
+	if (strncmp(arg, "-fallback-p2p=", 14) == 0) {
+		cfg->fallback.p2p_peers = atoi(arg + 14);
+		if (cfg->fallback.p2p_peers < 1) cfg->fallback.p2p_peers = 1;
+		if (cfg->fallback.p2p_peers > 50) cfg->fallback.p2p_peers = 50;
+		return 1;
+	}
+	if (strcmp(arg, "-fallback-all") == 0) {
+		cfg->fallback.mempool_space = 1;
+		cfg->fallback.blockstream = 1;
+		cfg->fallback.blockchair = 1;
+		cfg->fallback.blockchain_info = 1;
+		cfg->fallback.blockcypher = 1;
+		cfg->fallback.p2p_peers = 10;
+		return 1;
+	}
 
 	/* -help=command */
 	if (strncmp(arg, "-help=", 6) == 0) {
@@ -151,6 +203,7 @@ int config_parse_args(Config *cfg, int argc, char **argv)
 	/* Initialize defaults */
 	memset(cfg, 0, sizeof(Config));
 	cfg->network = NET_MAINNET;
+	cfg->verify_peers = 3;
 	strncpy(cfg->host, "127.0.0.1", sizeof(cfg->host) - 1);
 	strncpy(cfg->datadir, config_default_datadir(), sizeof(cfg->datadir) - 1);
 	cfg->cmd_index = -1;
@@ -208,6 +261,16 @@ void config_print_usage(const char *prog)
 	printf("  -color=<when>        Colorize JSON output (auto, always, never)\n");
 	printf("  -getinfo             Get general info from node\n");
 	printf("  -netinfo             Get network peer connection info\n");
+	printf("  -verify              Verify tx propagation via P2P peers\n");
+	printf("  -verify-peers=<n>    Number of peers to check (default: 3, max: 10)\n");
+	printf("  -fallback-mempool-space    Broadcast via mempool.space API (requires TLS)\n");
+	printf("  -fallback-blockstream      Broadcast via blockstream.info API (requires TLS)\n");
+	printf("  -fallback-blockchair       Broadcast via blockchair.com API (requires TLS)\n");
+	printf("  -fallback-blockchain-info  Broadcast via blockchain.info API (requires TLS)\n");
+	printf("  -fallback-blockcypher      Broadcast via blockcypher.com API (requires TLS)\n");
+	printf("  -fallback-esplora=<url>    Broadcast via Esplora API at URL (plain HTTP OK)\n");
+	printf("  -fallback-p2p=<n>        Broadcast to N peers via P2P protocol\n");
+	printf("  -fallback-all            Enable all fallback methods\n");
 	printf("  -version             Show version and exit\n");
 	printf("  -help                Show this help\n");
 	printf("  -help=<command>      Show help for specific command\n");

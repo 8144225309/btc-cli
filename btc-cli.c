@@ -17,6 +17,7 @@
 #include "methods.h"
 #include "rpc.h"
 #include "json.h"
+#include "fallback.h"
 
 #define BTC_CLI_VERSION "1.0.0"
 
@@ -465,9 +466,14 @@ int main(int argc, char **argv)
 		}
 	} else {
 		if (rpc_connect(&rpc) < 0) {
-			fprintf(stderr, "error: Could not connect to %s:%d\n", cfg.host, cfg.port);
-			fprintf(stderr, "Is bitcoind running?\n");
-			return 1;
+			if (fallback_has_any(&cfg.fallback)) {
+				fprintf(stderr, "warning: Could not connect to %s:%d — using fallbacks\n",
+				        cfg.host, cfg.port);
+			} else {
+				fprintf(stderr, "error: Could not connect to %s:%d\n", cfg.host, cfg.port);
+				fprintf(stderr, "Is bitcoind running?\n");
+				return 1;
+			}
 		}
 	}
 
@@ -486,6 +492,14 @@ int main(int argc, char **argv)
 	/* Set named parameter mode if requested */
 	if (cfg.named)
 		method_set_named_mode(1);
+
+	/* Set up P2P verification if requested */
+	if (cfg.verify)
+		method_set_verify(cfg.verify, cfg.verify_peers, cfg.network);
+
+	/* Set up fallback broadcast if configured */
+	if (fallback_has_any(&cfg.fallback))
+		method_set_fallback(&cfg.fallback);
 
 	/* Build and execute command */
 	int cmd_argc = argc - cfg.cmd_index - 1;

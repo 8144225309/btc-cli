@@ -271,10 +271,15 @@ static char *read_http_response(int sock)
 			if (strncmp(buffer, "HTTP/1.", 7) == 0)
 				sscanf(buffer + 9, "%d", &http_status);
 
-			/* Return NULL for non-2xx status (auth failure, etc) */
+			/* For non-2xx: only return body for HTTP 500 — Bitcoin Core
+			 * sends JSON-RPC error objects via HTTP 500.
+			 * 401/403/404 have no useful JSON body. */
 			if (http_status < 200 || http_status >= 300) {
-				free(buffer);
-				return NULL;
+				if (http_status != 500) {
+					free(buffer);
+					return NULL;
+				}
+				/* HTTP 500: fall through to read JSON error body */
 			}
 
 			cl_header = strstr(buffer, "Content-Length:");

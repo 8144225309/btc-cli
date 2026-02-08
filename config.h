@@ -22,6 +22,17 @@ typedef enum {
 #define COLOR_ALWAYS 1
 #define COLOR_NEVER  2
 
+/* Fallback broadcast configuration */
+typedef struct {
+	int mempool_space;      /* -fallback-mempool-space */
+	int blockstream;        /* -fallback-blockstream */
+	int blockchair;         /* -fallback-blockchair */
+	int blockchain_info;    /* -fallback-blockchain-info */
+	int blockcypher;        /* -fallback-blockcypher */
+	char esplora_url[512];  /* -fallback-esplora=URL */
+	int p2p_peers;          /* -fallback-p2p=N (0 = disabled) */
+} FallbackConfig;
+
 /* Configuration from CLI args + config file */
 typedef struct {
 	/* Network selection */
@@ -52,6 +63,9 @@ typedef struct {
 	int rpcwait_timeout;  /* Timeout for rpcwait (seconds, 0=forever) */
 	int stdinrpcpass;  /* Read RPC password from stdin */
 	int color;         /* Color output mode */
+	int verify;        /* -verify: P2P tx propagation check */
+	int verify_peers;  /* -verify-peers=N: peers to check (default 3) */
+	FallbackConfig fallback;  /* Fallback broadcast settings */
 
 	/* Help for specific command */
 	char help_cmd[64];
