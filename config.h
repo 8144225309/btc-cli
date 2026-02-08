@@ -43,11 +43,14 @@ typedef struct {
 	/* Connection */
 	char host[256];
 	int port;
-	int port_set;  /* Was port explicitly set? */
+	int port_set;       /* Was port explicitly set by CLI? */
+	int port_from_conf; /* Was port set from config file? */
 
 	/* Authentication */
 	char user[256];
+	int user_set;      /* Was rpcuser set by CLI? */
 	char password[256];
+	int password_set;  /* Was rpcpassword set by CLI? */
 	char cookie_file[1024];
 	char datadir[1024];
 

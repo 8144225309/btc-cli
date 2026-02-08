@@ -281,10 +281,17 @@ static char *read_http_response(int sock)
 			if (strncmp(buffer, "HTTP/1.", 7) == 0)
 				sscanf(buffer + 9, "%d", &http_status);
 
-			/* For non-2xx: only return body for HTTP 500 — Bitcoin Core
-			 * sends JSON-RPC error objects via HTTP 500.
-			 * 401/403/404 have no useful JSON body. */
+			/* For non-2xx: return JSON body for HTTP 500 (RPC errors),
+			 * synthetic error for 401 (auth failure),
+			 * and NULL for everything else */
 			if (http_status < 200 || http_status >= 300) {
+				if (http_status == 401) {
+					free(buffer);
+					return strdup("{\"result\":null,\"error\":{\"code\":-1,"
+						"\"message\":\"Authorization failed: "
+						"Incorrect rpcuser or rpcpassword "
+						"(authorization failed)\"},\"id\":1}");
+				}
 				if (http_status != 500) {
 					free(buffer);
 					return NULL;
@@ -353,7 +360,7 @@ char *rpc_call(RpcClient *client, const char *method, const char *params)
 		return NULL;
 
 	snprintf(body, body_len,
-		"{\"jsonrpc\":\"1.0\",\"id\":\"1\",\"method\":\"%s\",\"params\":%s}",
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
 		method, params_str);
 
 	/* Calculate request size: headers + body */

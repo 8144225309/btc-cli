@@ -9,8 +9,16 @@
 const char *config_default_datadir(void)
 {
 	static char path[1024];
-	const char *home = getenv("HOME");
 
+#ifdef _WIN32
+	const char *appdata = getenv("APPDATA");
+	if (appdata) {
+		snprintf(path, sizeof(path), "%s\\Bitcoin", appdata);
+		return path;
+	}
+#endif
+
+	const char *home = getenv("HOME");
 	if (!home)
 		home = ".";
 
@@ -225,10 +233,12 @@ static int parse_option(Config *cfg, const char *arg)
 	}
 	if (strncmp(arg, "-rpcuser=", 9) == 0) {
 		strncpy(cfg->user, arg + 9, sizeof(cfg->user) - 1);
+		cfg->user_set = 1;
 		return 1;
 	}
 	if (strncmp(arg, "-rpcpassword=", 13) == 0) {
 		strncpy(cfg->password, arg + 13, sizeof(cfg->password) - 1);
+		cfg->password_set = 1;
 		return 1;
 	}
 	if (strncmp(arg, "-rpccookiefile=", 15) == 0) {
@@ -268,7 +278,12 @@ int config_parse_args(Config *cfg, int argc, char **argv)
 	/* Parse arguments */
 	for (i = 1; i < argc; i++) {
 		if (argv[i][0] == '-') {
-			if (!parse_option(cfg, argv[i])) {
+			/* Support --option by passing to parse_option as -option */
+			const char *opt = argv[i];
+			if (opt[0] == '-' && opt[1] == '-')
+				opt = opt + 1;  /* Skip first dash: --foo → -foo */
+
+			if (!parse_option(cfg, opt)) {
 				fprintf(stderr, "error: Unknown option: %s\n", argv[i]);
 				return -1;
 			}
@@ -284,8 +299,8 @@ int config_parse_args(Config *cfg, int argc, char **argv)
 
 void config_apply_network_defaults(Config *cfg)
 {
-	/* Set default port if not explicitly specified */
-	if (!cfg->port_set) {
+	/* Set default port if not set by CLI or config file */
+	if (!cfg->port_set && !cfg->port_from_conf) {
 		switch (cfg->network) {
 		case NET_MAINNET:  cfg->port = PORT_MAINNET;  break;
 		case NET_TESTNET:  cfg->port = PORT_TESTNET;  break;
@@ -349,13 +364,38 @@ void config_print_usage(const char *prog)
 	printf("  %s -signet -named sendtoaddress address=tb1q... amount=0.1\n", prog);
 }
 
+/* Map section name to Network, returns -1 if not a network section */
+static int section_to_network(const char *section)
+{
+	if (strcmp(section, "main") == 0) return NET_MAINNET;
+	if (strcmp(section, "test") == 0) return NET_TESTNET;
+	if (strcmp(section, "testnet4") == 0) return NET_TESTNET4;
+	if (strcmp(section, "signet") == 0) return NET_SIGNET;
+	if (strcmp(section, "regtest") == 0) return NET_REGTEST;
+	return -1;
+}
+
+/* Internal recursive config parser with depth limit */
+static int config_parse_file_internal(Config *cfg, const char *path, int depth);
+
 int config_parse_file(Config *cfg, const char *path)
 {
-	FILE *f = fopen(path, "r");
+	return config_parse_file_internal(cfg, path, 0);
+}
+
+static int config_parse_file_internal(Config *cfg, const char *path, int depth)
+{
+	FILE *f;
+	char line[1024];
+	int current_section = -1;  /* -1 = root (no section), 0-4 = network */
+
+	if (depth > 10)
+		return -1;  /* Prevent infinite recursion */
+
+	f = fopen(path, "r");
 	if (!f)
 		return -1;
 
-	char line[1024];
 	while (fgets(line, sizeof(line), f)) {
 		/* Skip leading whitespace */
 		char *p = line;
@@ -364,6 +404,20 @@ int config_parse_file(Config *cfg, const char *path)
 
 		/* Skip comments and empty lines */
 		if (*p == '#' || *p == '\n' || *p == '\0')
+			continue;
+
+		/* Check for [section] header */
+		if (*p == '[') {
+			char *end = strchr(p, ']');
+			if (end) {
+				*end = '\0';
+				current_section = section_to_network(p + 1);
+			}
+			continue;
+		}
+
+		/* Skip settings in wrong section */
+		if (current_section >= 0 && current_section != (int)cfg->network)
 			continue;
 
 		/* Parse key=value */
@@ -375,7 +429,7 @@ int config_parse_file(Config *cfg, const char *path)
 		char *key = p;
 		char *value = eq + 1;
 
-		/* Trim newline and trailing whitespace from value */
+		/* Trim newline and carriage return from value */
 		char *nl = strchr(value, '\n');
 		if (nl)
 			*nl = '\0';
@@ -383,15 +437,47 @@ int config_parse_file(Config *cfg, const char *path)
 		if (nl)
 			*nl = '\0';
 
-		/* Map to config fields (only if not already set by CLI) */
-		if (strcmp(key, "rpcuser") == 0 && !cfg->user[0])
+		/* Trim trailing whitespace from value */
+		{
+			size_t vlen = strlen(value);
+			while (vlen > 0 && (value[vlen - 1] == ' ' || value[vlen - 1] == '\t'))
+				value[--vlen] = '\0';
+		}
+
+		/* Handle includeconf directive */
+		if (strcmp(key, "includeconf") == 0) {
+			/* Resolve relative paths against datadir */
+			char inc_path[1024];
+			if (value[0] == '/') {
+				strncpy(inc_path, value, sizeof(inc_path) - 1);
+				inc_path[sizeof(inc_path) - 1] = '\0';
+			} else {
+				snprintf(inc_path, sizeof(inc_path), "%s/%s",
+				         cfg->datadir, value);
+			}
+			config_parse_file_internal(cfg, inc_path, depth + 1);
+			continue;
+		}
+
+		/* Map to config fields.
+		 * Priority: CLI args > [section] values > root values.
+		 * Section-specific values override root values,
+		 * but CLI-set values are never overwritten. */
+		int in_section = (current_section >= 0);
+
+		if (strcmp(key, "rpcuser") == 0 &&
+		    !cfg->user_set && (!cfg->user[0] || in_section))
 			strncpy(cfg->user, value, sizeof(cfg->user) - 1);
-		else if (strcmp(key, "rpcpassword") == 0 && !cfg->password[0])
+		else if (strcmp(key, "rpcpassword") == 0 &&
+		         !cfg->password_set && (!cfg->password[0] || in_section))
 			strncpy(cfg->password, value, sizeof(cfg->password) - 1);
 		else if (strcmp(key, "rpcconnect") == 0)
 			strncpy(cfg->host, value, sizeof(cfg->host) - 1);
-		else if (strcmp(key, "rpcport") == 0 && !cfg->port_set)
+		else if (strcmp(key, "rpcport") == 0 &&
+		         !cfg->port_set && (!cfg->port_from_conf || in_section)) {
 			cfg->port = atoi(value);
+			cfg->port_from_conf = 1;
+		}
 		else if (strcmp(key, "testnet") == 0 && atoi(value) && cfg->network == NET_MAINNET)
 			cfg->network = NET_TESTNET;
 		else if (strcmp(key, "signet") == 0 && atoi(value) && cfg->network == NET_MAINNET)
