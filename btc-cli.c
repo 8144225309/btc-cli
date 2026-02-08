@@ -11,6 +11,7 @@
 #include <conio.h>
 #else
 #include <termios.h>
+#include <signal.h>
 #endif
 
 #include "config.h"
@@ -337,6 +338,10 @@ int main(int argc, char **argv)
 	RpcClient rpc;
 	const MethodDef *method = NULL;
 	char *result = NULL;
+
+#ifndef _WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
 	int ret;
 	char cookie_path[1024];
 
