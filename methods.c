@@ -2,6 +2,9 @@
 
 #include "methods.h"
 #include "json.h"
+#include "sendtx.h"
+#include "verify.h"
+#include "fallback.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,9 +13,29 @@
 /* Global flag for named parameter mode */
 static int g_named_mode = 0;
 
+/* P2P verification settings */
+static int g_verify_enabled = 0;
+static int g_verify_peers = 3;
+static Network g_network = NET_MAINNET;
+
+/* Fallback broadcast settings */
+static FallbackConfig g_fallback_cfg;
+
 void method_set_named_mode(int enabled)
 {
 	g_named_mode = enabled;
+}
+
+void method_set_verify(int enabled, int peers, Network net)
+{
+	g_verify_enabled = enabled;
+	g_verify_peers = peers;
+	g_network = net;
+}
+
+void method_set_fallback(const FallbackConfig *cfg)
+{
+	g_fallback_cfg = *cfg;
 }
 
 /* Forward declarations of handlers */
@@ -53,7 +76,6 @@ GENERIC_HANDLER(decoderawtransaction)
 GENERIC_HANDLER(decodescript)
 GENERIC_HANDLER(signrawtransactionwithwallet)
 GENERIC_HANDLER(signrawtransactionwithkey)
-GENERIC_HANDLER(sendrawtransaction)
 GENERIC_HANDLER(testmempoolaccept)
 GENERIC_HANDLER(getrawtransaction)
 
@@ -220,6 +242,81 @@ GENERIC_HANDLER(waitforblock)
 GENERIC_HANDLER(waitforblockheight)
 GENERIC_HANDLER(waitfornewblock)
 GENERIC_HANDLER(walletdisplayaddress)
+
+/* Custom sendrawtransaction handler with retry + verify + fallback */
+static int cmd_sendrawtransaction(RpcClient *rpc, int argc, char **argv, char **out)
+{
+	SendTxResult result;
+	const char *hexstring = (argc >= 1) ? argv[0] : NULL;
+	const char *maxfeerate = (argc >= 2) ? argv[1] : NULL;
+	int rpc_ok;
+	int fallback_ok = 0;
+
+	if (!hexstring) {
+		*out = strdup("error: sendrawtransaction requires hexstring");
+		return 1;
+	}
+
+	/* Layer 1: Local RPC with retry */
+	rpc_ok = (sendtx_submit(rpc, hexstring, maxfeerate, &result) == 0);
+
+	if (rpc_ok) {
+		*out = strdup(result.txid);
+		if (result.in_local_mempool)
+			fprintf(stderr, "Confirmed in local mempool\n");
+	}
+
+	/* Layer 2: Fallback broadcast (always fires if configured) */
+	if (fallback_has_any(&g_fallback_cfg)) {
+		FallbackResult fb_results[MAX_FALLBACK_RESULTS];
+		int fb_count = 0;
+		int fb_ok;
+		int i;
+
+		fprintf(stderr, "\nFallback broadcast:\n");
+		fb_ok = fallback_broadcast(&g_fallback_cfg, hexstring,
+		                            g_network, fb_results, &fb_count);
+
+		for (i = 0; i < fb_count; i++) {
+			if (fb_results[i].success) {
+				fprintf(stderr, "  [%s] OK", fb_results[i].source);
+				if (fb_results[i].txid[0])
+					fprintf(stderr, " (%s)", fb_results[i].txid);
+				fprintf(stderr, "\n");
+				fallback_ok = 1;
+			} else {
+				fprintf(stderr, "  [%s] FAILED: %s\n",
+				        fb_results[i].source, fb_results[i].error);
+			}
+		}
+
+		if (fb_ok > 0)
+			fprintf(stderr, "  %d fallback(s) succeeded\n", fb_ok);
+	}
+
+	/* If RPC failed, check if a fallback saved us */
+	if (!rpc_ok) {
+		if (fallback_ok) {
+			if (!*out)
+				*out = strdup(result.txid[0] ? result.txid :
+				              "broadcast via fallback");
+		} else {
+			*out = strdup(result.error_msg);
+			return 1;
+		}
+	}
+
+	/* Layer 3: P2P verification (opt-in, separate from fallback) */
+	if (g_verify_enabled) {
+		fprintf(stderr, "\nVerifying transaction propagation...\n");
+		int confirmed = verify_tx_propagation(result.txid, g_network,
+		                                       g_verify_peers);
+		if (confirmed == 0)
+			fprintf(stderr, "Warning: tx not found in any peer mempool\n");
+	}
+
+	return 0;
+}
 
 /* Method registry */
 static const MethodDef methods[] = {

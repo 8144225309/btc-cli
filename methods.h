@@ -4,6 +4,7 @@
 #define METHODS_H
 
 #include "rpc.h"
+#include "config.h"
 
 /* Parameter types for validation */
 typedef enum {
@@ -79,5 +80,11 @@ char *method_extract_result(const char *response, int *error_code);
 
 /* Set named parameter mode (for -named flag) */
 void method_set_named_mode(int enabled);
+
+/* Configure P2P verification for sendrawtransaction */
+void method_set_verify(int enabled, int peers, Network net);
+
+/* Configure fallback broadcast for sendrawtransaction */
+void method_set_fallback(const FallbackConfig *cfg);
 
 #endif
