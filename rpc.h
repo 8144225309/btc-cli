@@ -11,6 +11,7 @@ typedef struct {
 	char auth[512];
 	char wallet[256];  /* Wallet name for -rpcwallet */
 	int sock;
+	int timeout;       /* Socket timeout in seconds (default: 900) */
 } RpcClient;
 
 void rpc_init(RpcClient *client, const char *host, int port);

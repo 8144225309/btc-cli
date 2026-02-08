@@ -243,6 +243,12 @@ GENERIC_HANDLER(waitforblockheight)
 GENERIC_HANDLER(waitfornewblock)
 GENERIC_HANDLER(walletdisplayaddress)
 
+/* Missing wallet methods */
+GENERIC_HANDLER(addmultisigaddress)
+GENERIC_HANDLER(newkeypool)
+GENERIC_HANDLER(upgradewallet)
+GENERIC_HANDLER(sethdseed)
+
 /* Custom sendrawtransaction handler with retry + verify + fallback */
 static int cmd_sendrawtransaction(RpcClient *rpc, int argc, char **argv, char **out)
 {
@@ -1110,6 +1116,26 @@ static const MethodDef methods[] = {
 	{"walletdisplayaddress", "wallet", "Display address on external signer",
 	 cmd_walletdisplayaddress,
 	 {{"address", PARAM_ADDRESS, 1, "Address to display"}}, 1},
+
+	/* === Missing Wallet Methods === */
+	{"addmultisigaddress", "wallet", "Add multisig address to wallet",
+	 cmd_addmultisigaddress,
+	 {{"nrequired", PARAM_INT, 1, "Required signatures"},
+	  {"keys", PARAM_ARRAY, 1, "Public keys or addresses"},
+	  {"label", PARAM_STRING, 0, "Label"},
+	  {"address_type", PARAM_STRING, 0, "Address type"}}, 4},
+
+	{"newkeypool", "wallet", "Flush and refill keypool",
+	 cmd_newkeypool, {}, 0},
+
+	{"upgradewallet", "wallet", "Upgrade wallet to latest format",
+	 cmd_upgradewallet,
+	 {{"version", PARAM_INT, 0, "Target wallet version"}}, 1},
+
+	{"sethdseed", "wallet", "Set HD seed (deprecated)",
+	 cmd_sethdseed,
+	 {{"newkeypool", PARAM_BOOL, 0, "Flush old keypool"},
+	  {"seed", PARAM_STRING, 0, "WIF private key for seed"}}, 2},
 
 	/* Sentinel */
 	{NULL, NULL, NULL, NULL, {}, 0}

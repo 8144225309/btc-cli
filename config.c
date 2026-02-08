@@ -21,10 +21,11 @@ const char *config_default_datadir(void)
 const char *config_network_subdir(Network net)
 {
 	switch (net) {
-	case NET_TESTNET: return "testnet3";
-	case NET_SIGNET:  return "signet";
-	case NET_REGTEST: return "regtest";
-	default:          return "";
+	case NET_TESTNET:  return "testnet3";
+	case NET_TESTNET4: return "testnet4";
+	case NET_SIGNET:   return "signet";
+	case NET_REGTEST:  return "regtest";
+	default:           return "";
 	}
 }
 
@@ -67,7 +68,21 @@ static int parse_option(Config *cfg, const char *arg)
 		return 1;
 	}
 	if (strcmp(arg, "-netinfo") == 0) {
-		cfg->netinfo = 1;
+		cfg->netinfo = 0;  /* Level 0 (summary) */
+		return 1;
+	}
+	if (strncmp(arg, "-netinfo=", 9) == 0) {
+		cfg->netinfo = atoi(arg + 9);
+		if (cfg->netinfo < 0) cfg->netinfo = 0;
+		if (cfg->netinfo > 4) cfg->netinfo = 4;
+		return 1;
+	}
+	if (strcmp(arg, "-addrinfo") == 0) {
+		cfg->addrinfo = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-generate") == 0) {
+		cfg->generate = 1;
 		return 1;
 	}
 	if (strcmp(arg, "-version") == 0 || strcmp(arg, "--version") == 0) {
@@ -84,6 +99,46 @@ static int parse_option(Config *cfg, const char *arg)
 	}
 	if (strcmp(arg, "-stdinrpcpass") == 0) {
 		cfg->stdinrpcpass = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-stdinwalletpassphrase") == 0) {
+		cfg->stdinwalletpassphrase = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-testnet4") == 0) {
+		cfg->network = NET_TESTNET4;
+		return 1;
+	}
+	if (strncmp(arg, "-chain=", 7) == 0) {
+		const char *chain = arg + 7;
+		if (strcmp(chain, "main") == 0)
+			cfg->network = NET_MAINNET;
+		else if (strcmp(chain, "test") == 0)
+			cfg->network = NET_TESTNET;
+		else if (strcmp(chain, "testnet4") == 0)
+			cfg->network = NET_TESTNET4;
+		else if (strcmp(chain, "signet") == 0)
+			cfg->network = NET_SIGNET;
+		else if (strcmp(chain, "regtest") == 0)
+			cfg->network = NET_REGTEST;
+		else {
+			fprintf(stderr, "error: Unknown chain: %s\n", chain);
+			return 0;
+		}
+		return 1;
+	}
+	if (strncmp(arg, "-rpcclienttimeout=", 18) == 0) {
+		cfg->rpc_timeout = atoi(arg + 18);
+		return 1;
+	}
+	if (strncmp(arg, "-signetchallenge=", 17) == 0) {
+		strncpy(cfg->signetchallenge, arg + 17,
+		        sizeof(cfg->signetchallenge) - 1);
+		return 1;
+	}
+	if (strncmp(arg, "-signetseednode=", 16) == 0) {
+		strncpy(cfg->signetseednode, arg + 16,
+		        sizeof(cfg->signetseednode) - 1);
 		return 1;
 	}
 	if (strcmp(arg, "-color") == 0 || strcmp(arg, "-color=auto") == 0) {
@@ -203,6 +258,8 @@ int config_parse_args(Config *cfg, int argc, char **argv)
 	/* Initialize defaults */
 	memset(cfg, 0, sizeof(Config));
 	cfg->network = NET_MAINNET;
+	cfg->netinfo = -1;
+	cfg->rpc_timeout = 900;
 	cfg->verify_peers = 3;
 	strncpy(cfg->host, "127.0.0.1", sizeof(cfg->host) - 1);
 	strncpy(cfg->datadir, config_default_datadir(), sizeof(cfg->datadir) - 1);
@@ -230,10 +287,11 @@ void config_apply_network_defaults(Config *cfg)
 	/* Set default port if not explicitly specified */
 	if (!cfg->port_set) {
 		switch (cfg->network) {
-		case NET_MAINNET: cfg->port = PORT_MAINNET; break;
-		case NET_TESTNET: cfg->port = PORT_TESTNET; break;
-		case NET_SIGNET:  cfg->port = PORT_SIGNET;  break;
-		case NET_REGTEST: cfg->port = PORT_REGTEST; break;
+		case NET_MAINNET:  cfg->port = PORT_MAINNET;  break;
+		case NET_TESTNET:  cfg->port = PORT_TESTNET;  break;
+		case NET_TESTNET4: cfg->port = PORT_TESTNET4; break;
+		case NET_SIGNET:   cfg->port = PORT_SIGNET;   break;
+		case NET_REGTEST:  cfg->port = PORT_REGTEST;  break;
 		}
 	}
 }
@@ -243,7 +301,9 @@ void config_print_usage(const char *prog)
 	printf("Usage: %s [options] <command> [params]\n\n", prog);
 	printf("Options:\n");
 	printf("  -signet              Use signet network (port %d)\n", PORT_SIGNET);
-	printf("  -testnet             Use testnet (port %d)\n", PORT_TESTNET);
+	printf("  -testnet             Use testnet3 (port %d)\n", PORT_TESTNET);
+	printf("  -testnet4            Use testnet4 (port %d)\n", PORT_TESTNET4);
+	printf("  -chain=<name>        Select chain (main|test|testnet4|signet|regtest)\n");
 	printf("  -regtest             Use regtest (port %d)\n", PORT_REGTEST);
 	printf("  -rpcconnect=<ip>     Connect to node at <ip> (default: 127.0.0.1)\n");
 	printf("  -rpcport=<port>      Connect to port <port>\n");
@@ -257,10 +317,16 @@ void config_print_usage(const char *prog)
 	printf("  -stdin               Read extra args from stdin\n");
 	printf("  -rpcwait             Wait for server to start\n");
 	printf("  -rpcwaittimeout=<n>  Timeout for -rpcwait in seconds (default: 0=forever)\n");
+	printf("  -rpcclienttimeout=<n> RPC timeout in seconds (default: 900)\n");
 	printf("  -stdinrpcpass        Read RPC password from stdin (no echo)\n");
+	printf("  -stdinwalletpassphrase  Read wallet passphrase from stdin\n");
+	printf("  -signetchallenge=<hex>  Custom signet challenge script\n");
+	printf("  -signetseednode=<h:p>   Custom signet seed node\n");
 	printf("  -color=<when>        Colorize JSON output (auto, always, never)\n");
 	printf("  -getinfo             Get general info from node\n");
-	printf("  -netinfo             Get network peer connection info\n");
+	printf("  -netinfo[=<level>]   Get network peer info (level 0-4, default 0)\n");
+	printf("  -addrinfo            Get address counts by network type\n");
+	printf("  -generate [n] [max]  Generate n blocks (default: 1)\n");
 	printf("  -verify              Verify tx propagation via P2P peers\n");
 	printf("  -verify-peers=<n>    Number of peers to check (default: 3, max: 10)\n");
 	printf("  -fallback-mempool-space    Broadcast via mempool.space API (requires TLS)\n");
@@ -332,6 +398,22 @@ int config_parse_file(Config *cfg, const char *path)
 			cfg->network = NET_SIGNET;
 		else if (strcmp(key, "regtest") == 0 && atoi(value) && cfg->network == NET_MAINNET)
 			cfg->network = NET_REGTEST;
+		else if (strcmp(key, "testnet4") == 0 && atoi(value) && cfg->network == NET_MAINNET)
+			cfg->network = NET_TESTNET4;
+		else if (strcmp(key, "chain") == 0 && cfg->network == NET_MAINNET) {
+			if (strcmp(value, "main") == 0)
+				cfg->network = NET_MAINNET;
+			else if (strcmp(value, "test") == 0)
+				cfg->network = NET_TESTNET;
+			else if (strcmp(value, "testnet4") == 0)
+				cfg->network = NET_TESTNET4;
+			else if (strcmp(value, "signet") == 0)
+				cfg->network = NET_SIGNET;
+			else if (strcmp(value, "regtest") == 0)
+				cfg->network = NET_REGTEST;
+		}
+		else if (strcmp(key, "rpcclienttimeout") == 0 && cfg->rpc_timeout == 900)
+			cfg->rpc_timeout = atoi(value);
 	}
 
 	fclose(f);

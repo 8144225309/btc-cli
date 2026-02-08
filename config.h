@@ -7,15 +7,17 @@
 typedef enum {
 	NET_MAINNET = 0,
 	NET_TESTNET,
+	NET_TESTNET4,
 	NET_SIGNET,
 	NET_REGTEST
 } Network;
 
 /* Default ports by network */
-#define PORT_MAINNET  8332
-#define PORT_TESTNET  18332
-#define PORT_SIGNET   38332
-#define PORT_REGTEST  18443
+#define PORT_MAINNET   8332
+#define PORT_TESTNET   18332
+#define PORT_TESTNET4  48332
+#define PORT_SIGNET    38332
+#define PORT_REGTEST   18443
 
 /* Color output modes */
 #define COLOR_AUTO   0
@@ -57,12 +59,18 @@ typedef struct {
 	int help;        /* Show help */
 	int stdin_rpc;   /* Read params from stdin */
 	int getinfo;     /* Show combined node info */
-	int netinfo;     /* Show network peer summary */
+	int netinfo;     /* -1=off, 0-4=detail level */
+	int addrinfo;    /* Show address counts by network */
+	int generate;    /* Generate blocks convenience command */
 	int version;     /* Show version and exit */
 	int rpcwait;     /* Wait for RPC server to start */
 	int rpcwait_timeout;  /* Timeout for rpcwait (seconds, 0=forever) */
 	int stdinrpcpass;  /* Read RPC password from stdin */
 	int color;         /* Color output mode */
+	int rpc_timeout;   /* -rpcclienttimeout (seconds, default 900) */
+	int stdinwalletpassphrase;  /* Read wallet passphrase from stdin */
+	char signetchallenge[1024]; /* Custom signet challenge script hex */
+	char signetseednode[256];   /* Custom signet seed node host:port */
 	int verify;        /* -verify: P2P tx propagation check */
 	int verify_peers;  /* -verify-peers=N: peers to check (default 3) */
 	FallbackConfig fallback;  /* Fallback broadcast settings */

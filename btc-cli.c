@@ -165,141 +165,508 @@ static void read_password_stdin(char *buf, size_t size)
 #endif
 }
 
-/* Handle -getinfo: combined node information */
-static int handle_getinfo(RpcClient *rpc)
+/* Handle -addrinfo: address count by network type */
+static int handle_addrinfo(RpcClient *rpc)
 {
-	char *blockchain = NULL;
-	char *network = NULL;
-	char *wallet = NULL;
-	char buf[256];
-	int chain_height = 0;
-	int connections = 0;
-	double difficulty = 0;
-	double balance = 0;
-	int has_wallet = 0;
+	char *response;
+	const char *p;
+	int ipv4 = 0, ipv6 = 0, onion = 0, i2p = 0, cjdns = 0, total = 0;
 
-	/* Get blockchain info */
-	blockchain = rpc_call(rpc, "getblockchaininfo", "[]");
-	if (blockchain) {
-		chain_height = (int)json_get_int(blockchain, "blocks");
-		difficulty = json_get_double(blockchain, "difficulty");
-		json_get_string(blockchain, "chain", buf, sizeof(buf));
-		printf("Chain: %s\n", buf);
-		printf("Blocks: %d\n", chain_height);
-		printf("Difficulty: %.4g\n", difficulty);
+	/* getnodeaddresses 0 = return all known addresses */
+	response = rpc_call(rpc, "getnodeaddresses", "[0]");
+	if (!response) {
+		fprintf(stderr, "error: Could not get node addresses\n");
+		return 1;
+	}
 
-		/* Verification progress */
-		double progress = json_get_double(blockchain, "verificationprogress");
-		if (progress > 0 && progress < 0.9999) {
-			printf("Sync: %.2f%%\n", progress * 100);
+	/* Find result array within JSON-RPC response */
+	const char *result_arr = json_find_value(response, "result");
+	if (!result_arr) result_arr = response;
+	while (*result_arr && *result_arr != '[') result_arr++;
+	const char *arr_end = NULL;
+	if (*result_arr == '[')
+		arr_end = json_find_closing(result_arr);
+
+	/* Iterate address objects within the result array */
+	p = result_arr;
+	while (*p && (!arr_end || p < arr_end)) {
+		const char *obj = strchr(p, '{');
+		if (!obj || (arr_end && obj >= arr_end)) break;
+		const char *end = json_find_closing(obj);
+		if (!end) break;
+
+		size_t len = end - obj + 1;
+		char *entry = malloc(len + 1);
+		if (entry) {
+			char net[32] = {0};
+			memcpy(entry, obj, len);
+			entry[len] = '\0';
+
+			if (json_get_string(entry, "network", net, sizeof(net)) > 0) {
+				total++;
+				if (strcmp(net, "ipv4") == 0) ipv4++;
+				else if (strcmp(net, "ipv6") == 0) ipv6++;
+				else if (strcmp(net, "onion") == 0) onion++;
+				else if (strcmp(net, "i2p") == 0) i2p++;
+				else if (strcmp(net, "cjdns") == 0) cjdns++;
+			}
+			free(entry);
 		}
-		free(blockchain);
+		p = end + 1;
 	}
+	free(response);
 
-	/* Get network info */
-	network = rpc_call(rpc, "getnetworkinfo", "[]");
-	if (network) {
-		connections = (int)json_get_int(network, "connections");
-		json_get_string(network, "subversion", buf, sizeof(buf));
-		printf("Connections: %d\n", connections);
-		printf("Node: %s\n", buf);
-		free(network);
-	}
-
-	/* Try to get wallet info (may fail if no wallet loaded) */
-	wallet = rpc_call(rpc, "getbalances", "[]");
-	if (wallet) {
-		/* Try to get trusted balance from mine.trusted */
-		const char *mine = json_find_object(wallet, "mine");
-		if (mine) {
-			balance = json_get_double(mine, "trusted");
-			has_wallet = 1;
-		}
-		free(wallet);
-	}
-
-	if (has_wallet) {
-		printf("Balance: %.8f BTC\n", balance);
-	}
+	printf("{\"addresses_known\":{");
+	printf("\"ipv4\":%d,\"ipv6\":%d,\"onion\":%d,\"i2p\":%d,\"cjdns\":%d,\"total\":%d",
+	       ipv4, ipv6, onion, i2p, cjdns, total);
+	printf("}}\n");
 
 	return 0;
 }
 
-/* Handle -netinfo: network peer summary */
-static int handle_netinfo(RpcClient *rpc)
+/* Handle -generate: convenience block generator */
+static int handle_generate(RpcClient *rpc, int argc, char **argv, int cmd_index)
 {
-	char *peers = NULL;
-	int total = 0, inbound = 0, outbound = 0;
-	int ipv4 = 0, ipv6 = 0, onion = 0, i2p = 0;
-	const char *p;
+	char *response;
+	char params[512];
+	char address[256] = {0};
+	int nblocks = 1;
+	int maxtries = 1000000;
+	int error_code;
 
-	peers = rpc_call(rpc, "getpeerinfo", "[]");
-	if (!peers) {
+	/* Parse optional positional args after -generate */
+	if (cmd_index >= 0 && cmd_index < argc)
+		nblocks = atoi(argv[cmd_index]);
+	if (cmd_index >= 0 && cmd_index + 1 < argc)
+		maxtries = atoi(argv[cmd_index + 1]);
+
+	if (nblocks < 1) nblocks = 1;
+
+	/* Step 1: get a fresh address */
+	response = rpc_call(rpc, "getnewaddress", "[]");
+	if (!response) {
+		fprintf(stderr, "error: getnewaddress failed (is a wallet loaded?)\n");
+		return 1;
+	}
+
+	char *addr_result = method_extract_result(response, &error_code);
+	free(response);
+
+	if (error_code != 0 || !addr_result) {
+		fprintf(stderr, "error: getnewaddress: %s\n", addr_result ? addr_result : "failed");
+		free(addr_result);
+		return 1;
+	}
+	strncpy(address, addr_result, sizeof(address) - 1);
+	free(addr_result);
+
+	/* Step 2: generatetoaddress */
+	snprintf(params, sizeof(params), "[%d,\"%s\",%d]", nblocks, address, maxtries);
+
+	response = rpc_call(rpc, "generatetoaddress", params);
+	if (!response) {
+		fprintf(stderr, "error: generatetoaddress failed\n");
+		return 1;
+	}
+
+	char *result = method_extract_result(response, &error_code);
+	free(response);
+
+	if (result) {
+		const char *p = result;
+		while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+		if (*p == '{' || *p == '[')
+			print_json_pretty(result, 0);
+		else
+			printf("%s\n", result);
+		free(result);
+	}
+
+	return error_code != 0 ? 1 : 0;
+}
+
+/* Handle -getinfo: combined node information (full dashboard) */
+static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
+{
+	char *blockchain = NULL;
+	char *network = NULL;
+	char *walletinfo = NULL;
+	char *walletlist = NULL;
+	char buf[256];
+
+	/* Collect data */
+	blockchain = rpc_call(rpc, "getblockchaininfo", "[]");
+	network = rpc_call(rpc, "getnetworkinfo", "[]");
+
+	printf("{\n");
+
+	/* Chain info */
+	if (blockchain) {
+		json_get_string(blockchain, "chain", buf, sizeof(buf));
+		printf("  \"chain\": \"%s\",\n", buf);
+		printf("  \"blocks\": %d,\n", (int)json_get_int(blockchain, "blocks"));
+		printf("  \"headers\": %d,\n", (int)json_get_int(blockchain, "headers"));
+		printf("  \"difficulty\": %.4g,\n", json_get_double(blockchain, "difficulty"));
+
+		double progress = json_get_double(blockchain, "verificationprogress");
+		if (progress > 0 && progress < 0.9999)
+			printf("  \"verificationprogress\": %.6f,\n", progress);
+	}
+
+	/* Network info */
+	if (network) {
+		printf("  \"timeoffset\": %d,\n", (int)json_get_int(network, "timeoffset"));
+
+		int conn_in = (int)json_get_int(network, "connections_in");
+		int conn_out = (int)json_get_int(network, "connections_out");
+		int conn_total = (int)json_get_int(network, "connections");
+		printf("  \"connections\": {\"in\": %d, \"out\": %d, \"total\": %d},\n",
+		       conn_in, conn_out, conn_total);
+
+		/* Proxy */
+		const char *networks_arr = json_find_array(network, "networks");
+		if (networks_arr) {
+			const char *first_net = strchr(networks_arr, '{');
+			if (first_net) {
+				const char *first_end = json_find_closing(first_net);
+				if (first_end) {
+					size_t nlen = first_end - first_net + 1;
+					char *net_obj = malloc(nlen + 1);
+					if (net_obj) {
+						char proxy[256] = {0};
+						memcpy(net_obj, first_net, nlen);
+						net_obj[nlen] = '\0';
+						json_get_string(net_obj, "proxy", proxy, sizeof(proxy));
+						printf("  \"proxy\": \"%s\",\n", proxy);
+						free(net_obj);
+					}
+				}
+			}
+		}
+
+		printf("  \"relayfee\": %.8f,\n", json_get_double(network, "relayfee"));
+
+		char warnings[1024] = {0};
+		json_get_string(network, "warnings", warnings, sizeof(warnings));
+		printf("  \"warnings\": \"%s\",\n", warnings);
+	}
+
+	/* Wallet info — multi-wallet support */
+	int multi_wallet = 0;
+	walletlist = rpc_call(rpc, "listwallets", "[]");
+	if (walletlist) {
+		/* Find the result array: locate the [ ... ] within "result" */
+		const char *arr_start = json_find_value(walletlist, "result");
+		if (!arr_start) arr_start = walletlist;
+		/* Skip to the opening [ */
+		while (*arr_start && *arr_start != '[') arr_start++;
+
+		if (*arr_start == '[') {
+			const char *arr_end = json_find_closing(arr_start);
+			if (!arr_end) arr_end = arr_start;
+
+			/* Count wallet names within the array bounds */
+			int wallet_count = 0;
+			const char *q = arr_start + 1;
+			while (q < arr_end) {
+				if (*q == '"') {
+					wallet_count++;
+					q++;
+					while (q < arr_end && *q != '"') {
+						if (*q == '\\') q++;
+						q++;
+					}
+				}
+				if (q < arr_end) q++;
+			}
+
+			if (wallet_count > 1 && !wallet_name[0]) {
+				/* Multiple wallets, no -rpcwallet specified: show all balances */
+				printf("  \"balances\": {\n");
+				multi_wallet = 1;
+
+				/* Parse wallet names within array bounds only */
+				const char *p = arr_start + 1;
+				int first = 1;
+				while (p < arr_end) {
+					const char *start = strchr(p, '"');
+					if (!start || start >= arr_end) break;
+					start++;
+					const char *end = strchr(start, '"');
+					if (!end || end >= arr_end) break;
+
+					size_t namelen = end - start;
+					char wname[256] = {0};
+					if (namelen < sizeof(wname)) {
+						memcpy(wname, start, namelen);
+						wname[namelen] = '\0';
+
+						/* Set wallet and get balance */
+						rpc_set_wallet(rpc, wname);
+						rpc_disconnect(rpc);
+						if (rpc_connect(rpc) == 0) {
+							char *wb = rpc_call(rpc, "getbalances", "[]");
+							if (wb) {
+								const char *mine = json_find_object(wb, "mine");
+								double bal = mine ? json_get_double(mine, "trusted") : 0;
+								if (!first) printf(",\n");
+								printf("    \"%s\": %.8f", wname, bal);
+								first = 0;
+								free(wb);
+							}
+						}
+					}
+					p = end + 1;
+				}
+				printf("\n  }\n");
+			}
+		}
+		free(walletlist);
+	}
+
+	if (!multi_wallet) {
+		/* Single wallet or specific -rpcwallet */
+		walletinfo = rpc_call(rpc, "getbalances", "[]");
+		if (walletinfo) {
+			const char *mine = json_find_object(walletinfo, "mine");
+			if (mine) {
+				double balance = json_get_double(mine, "trusted");
+				printf("  \"balance\": %.8f,\n", balance);
+			}
+			free(walletinfo);
+		}
+
+		/* Wallet details */
+		char *winfo = rpc_call(rpc, "getwalletinfo", "[]");
+		if (winfo) {
+			printf("  \"keypoolsize\": %d,\n", (int)json_get_int(winfo, "keypoolsize"));
+			printf("  \"paytxfee\": %.8f\n", json_get_double(winfo, "paytxfee"));
+			free(winfo);
+		} else {
+			/* Remove trailing comma from warnings line if no wallet */
+			/* Already printed, just close cleanly */
+			printf("  \"wallet\": null\n");
+		}
+	}
+
+	printf("}\n");
+
+	free(blockchain);
+	free(network);
+	return 0;
+}
+
+/* Peer info struct for netinfo table */
+typedef struct {
+	int is_inbound;
+	char conn_type[32];
+	char network[16];
+	double minping;
+	double pingtime;
+	int64_t lastsend;
+	int64_t lastrecv;
+	int64_t last_transaction;
+	int64_t last_block;
+	int64_t conntime;
+	char addr[256];
+	char subver[256];
+} PeerRow;
+
+/* Handle -netinfo: network peer summary with detail levels 0-4 */
+static int handle_netinfo(RpcClient *rpc, int level, int outonly)
+{
+	char *peers_json = NULL;
+	char *net_json = NULL;
+	PeerRow peers[256];
+	int peer_count = 0;
+	int total = 0, inbound = 0, outbound = 0, block_relay = 0;
+	int ipv4 = 0, ipv6 = 0, onion = 0, i2p = 0, cjdns = 0;
+	const char *p;
+	int i;
+	time_t now = time(NULL);
+
+	peers_json = rpc_call(rpc, "getpeerinfo", "[]");
+	if (!peers_json) {
 		fprintf(stderr, "error: Could not get peer info\n");
 		return 1;
 	}
 
-	/* Count peers by parsing JSON array */
-	p = peers;
-	while (*p) {
-		/* Find each peer object */
-		const char *peer_start = strchr(p, '{');
-		if (!peer_start) break;
+	/* Find the result array within the JSON-RPC response */
+	const char *result_arr = json_find_value(peers_json, "result");
+	if (!result_arr) result_arr = peers_json;
+	/* Skip to opening [ */
+	while (*result_arr && *result_arr != '[') result_arr++;
+	const char *arr_end = NULL;
+	if (*result_arr == '[')
+		arr_end = json_find_closing(result_arr);
 
-		const char *peer_end = json_find_closing(peer_start);
-		if (!peer_end) break;
+	/* Parse peer objects into structs */
+	p = result_arr;
+	while (*p && peer_count < 256 && (!arr_end || p < arr_end)) {
+		const char *obj = strchr(p, '{');
+		if (!obj || (arr_end && obj >= arr_end)) break;
+		const char *end = json_find_closing(obj);
+		if (!end) break;
 
-		total++;
+		size_t len = end - obj + 1;
+		char *pj = malloc(len + 1);
+		if (!pj) { p = end + 1; continue; }
+		memcpy(pj, obj, len);
+		pj[len] = '\0';
 
-		/* Check inbound field */
-		char inbound_str[16] = {0};
-		/* Extract just this peer's JSON for parsing */
-		size_t peer_len = peer_end - peer_start + 1;
-		char *peer_json = malloc(peer_len + 1);
-		if (peer_json) {
-			memcpy(peer_json, peer_start, peer_len);
-			peer_json[peer_len] = '\0';
+		PeerRow *pr = &peers[peer_count];
+		memset(pr, 0, sizeof(PeerRow));
 
-			if (json_get_string(peer_json, "connection_type", inbound_str, sizeof(inbound_str)) > 0) {
-				if (strcmp(inbound_str, "inbound") == 0)
-					inbound++;
-				else
-					outbound++;
+		/* Direction */
+		json_get_string(pj, "connection_type", pr->conn_type, sizeof(pr->conn_type));
+		if (strcmp(pr->conn_type, "inbound") == 0) {
+			pr->is_inbound = 1;
+			inbound++;
+		} else {
+			const char *inb = json_find_value(pj, "inbound");
+			if (inb && strncmp(inb, "true", 4) == 0) {
+				pr->is_inbound = 1;
+				inbound++;
 			} else {
-				/* Fallback: check inbound boolean */
-				const char *inb = json_find_value(peer_json, "inbound");
-				if (inb && strncmp(inb, "true", 4) == 0)
-					inbound++;
-				else
-					outbound++;
+				outbound++;
 			}
-
-			/* Check network type */
-			char net_type[32] = {0};
-			if (json_get_string(peer_json, "network", net_type, sizeof(net_type)) > 0) {
-				if (strcmp(net_type, "ipv4") == 0) ipv4++;
-				else if (strcmp(net_type, "ipv6") == 0) ipv6++;
-				else if (strcmp(net_type, "onion") == 0) onion++;
-				else if (strcmp(net_type, "i2p") == 0) i2p++;
-			}
-
-			free(peer_json);
 		}
 
-		p = peer_end + 1;
+		if (strcmp(pr->conn_type, "block-relay-only") == 0)
+			block_relay++;
+
+		/* Network */
+		json_get_string(pj, "network", pr->network, sizeof(pr->network));
+		if (strcmp(pr->network, "ipv4") == 0) ipv4++;
+		else if (strcmp(pr->network, "ipv6") == 0) ipv6++;
+		else if (strcmp(pr->network, "onion") == 0) onion++;
+		else if (strcmp(pr->network, "i2p") == 0) i2p++;
+		else if (strcmp(pr->network, "cjdns") == 0) cjdns++;
+
+		/* Timing */
+		pr->minping = json_get_double(pj, "minping");
+		pr->pingtime = json_get_double(pj, "pingtime");
+		pr->lastsend = json_get_int(pj, "lastsend");
+		pr->lastrecv = json_get_int(pj, "lastrecv");
+		pr->last_transaction = json_get_int(pj, "last_transaction");
+		pr->last_block = json_get_int(pj, "last_block");
+		pr->conntime = json_get_int(pj, "conntime");
+
+		/* Address and version */
+		json_get_string(pj, "addr", pr->addr, sizeof(pr->addr));
+		json_get_string(pj, "subver", pr->subver, sizeof(pr->subver));
+
+		total++;
+		peer_count++;
+		free(pj);
+		p = end + 1;
 	}
 
-	printf("Peer connections:\n");
-	printf("  Total:    %d\n", total);
-	printf("  Inbound:  %d\n", inbound);
-	printf("  Outbound: %d\n", outbound);
-	printf("\nBy network:\n");
-	if (ipv4 > 0) printf("  IPv4:     %d\n", ipv4);
-	if (ipv6 > 0) printf("  IPv6:     %d\n", ipv6);
-	if (onion > 0) printf("  Onion:    %d\n", onion);
-	if (i2p > 0) printf("  I2P:      %d\n", i2p);
+	/* Level 1-4: print peer table */
+	if (level >= 1) {
+		/* Header */
+		printf("Peer connections:\n");
+		printf("  %3s  %3s  %-16s %-6s", "#", "<->", "type", "net");
 
-	free(peers);
+		printf("  %6s  %6s  %5s  %5s  %5s  %5s  %8s", "mping", "ping", "send", "recv", "txn", "blk", "age");
+		if (level == 2 || level == 4)
+			printf("  %-21s", "addr");
+		if (level == 3 || level == 4)
+			printf("  %-24s", "version");
+		printf("\n");
+
+		for (i = 0; i < peer_count; i++) {
+			PeerRow *pr = &peers[i];
+
+			/* outonly filter */
+			if (outonly && pr->is_inbound)
+				continue;
+
+			const char *dir = pr->is_inbound ? "in" : "out";
+			int mping_ms = (int)(pr->minping * 1000);
+			int ping_ms = (int)(pr->pingtime * 1000);
+
+			/* Time since last send/recv/tx/block */
+			int send_ago = pr->lastsend ? (int)(now - pr->lastsend) : -1;
+			int recv_ago = pr->lastrecv ? (int)(now - pr->lastrecv) : -1;
+			int tx_ago = pr->last_transaction ? (int)(now - pr->last_transaction) : -1;
+			int blk_ago = pr->last_block ? (int)(now - pr->last_block) : -1;
+
+			/* Connection age */
+			int age_secs = pr->conntime ? (int)(now - pr->conntime) : 0;
+			char age_str[16];
+			if (age_secs >= 86400)
+				snprintf(age_str, sizeof(age_str), "%dd", age_secs / 86400);
+			else if (age_secs >= 3600)
+				snprintf(age_str, sizeof(age_str), "%dh", age_secs / 3600);
+			else if (age_secs >= 60)
+				snprintf(age_str, sizeof(age_str), "%dm", age_secs / 60);
+			else
+				snprintf(age_str, sizeof(age_str), "%ds", age_secs);
+
+			printf("  %3d  %3s  %-16s %-6s", i + 1, dir, pr->conn_type, pr->network);
+			printf("  %6d  %6d", mping_ms, ping_ms);
+
+			if (send_ago >= 0) printf("  %5d", send_ago); else printf("  %5s", "-");
+			if (recv_ago >= 0) printf("  %5d", recv_ago); else printf("  %5s", "-");
+			if (tx_ago >= 0) printf("  %5d", tx_ago); else printf("  %5s", "-");
+			if (blk_ago >= 0) printf("  %5d", blk_ago); else printf("  %5s", "-");
+			printf("  %8s", age_str);
+
+			if (level == 2 || level == 4)
+				printf("  %-21s", pr->addr);
+			if (level == 3 || level == 4)
+				printf("  %-24s", pr->subver);
+			printf("\n");
+		}
+		printf("\n");
+	}
+
+	/* Summary (all levels) */
+	printf("Peer connections: %d (in %d, out %d", total, inbound, outbound);
+	if (block_relay > 0) printf(", block-relay %d", block_relay);
+	printf(")\n");
+
+	printf("\nBy network:");
+	if (ipv4 > 0) printf("  ipv4 %d", ipv4);
+	if (ipv6 > 0) printf("  ipv6 %d", ipv6);
+	if (onion > 0) printf("  onion %d", onion);
+	if (i2p > 0) printf("  i2p %d", i2p);
+	if (cjdns > 0) printf("  cjdns %d", cjdns);
+	printf("\n");
+
+	/* Local addresses from getnetworkinfo */
+	net_json = rpc_call(rpc, "getnetworkinfo", "[]");
+	if (net_json) {
+		const char *local = json_find_array(net_json, "localaddresses");
+		if (local) {
+			const char *la = strchr(local, '{');
+			if (la) {
+				printf("\nLocal addresses:");
+				while (la) {
+					const char *la_end = json_find_closing(la);
+					if (!la_end) break;
+					size_t llen = la_end - la + 1;
+					char *la_obj = malloc(llen + 1);
+					if (la_obj) {
+						char addr[256] = {0};
+						memcpy(la_obj, la, llen);
+						la_obj[llen] = '\0';
+						json_get_string(la_obj, "address", addr, sizeof(addr));
+						int port = (int)json_get_int(la_obj, "port");
+						int score = (int)json_get_int(la_obj, "score");
+						printf("  %s:%d (score %d)", addr, port, score);
+						free(la_obj);
+					}
+					la = strchr(la_end + 1, '{');
+				}
+				printf("\n");
+			}
+		}
+		free(net_json);
+	}
+
+	free(peers_json);
 	return 0;
 }
 
@@ -402,7 +769,7 @@ int main(int argc, char **argv)
 
 	/* Check for special info commands that don't need a command argument */
 	int need_command = 1;
-	if (cfg.getinfo || cfg.netinfo) {
+	if (cfg.getinfo || cfg.netinfo >= 0 || cfg.addrinfo || cfg.generate) {
 		need_command = 0;
 	}
 
@@ -427,6 +794,7 @@ int main(int argc, char **argv)
 
 	/* Initialize RPC client */
 	rpc_init(&rpc, cfg.host, cfg.port);
+	rpc.timeout = cfg.rpc_timeout;
 
 	/* Set wallet if specified */
 	if (cfg.wallet[0])
@@ -437,6 +805,12 @@ int main(int argc, char **argv)
 		fprintf(stderr, "RPC password: ");
 		read_password_stdin(cfg.password, sizeof(cfg.password));
 		fprintf(stderr, "\n");
+	}
+
+	/* Read wallet passphrase from stdin if requested */
+	char wallet_passphrase[256] = {0};
+	if (cfg.stdinwalletpassphrase) {
+		read_password_stdin(wallet_passphrase, sizeof(wallet_passphrase));
 	}
 
 	/* Set up authentication */
@@ -484,12 +858,29 @@ int main(int argc, char **argv)
 
 	/* Handle special info commands */
 	if (cfg.getinfo) {
-		ret = handle_getinfo(&rpc);
+		ret = handle_getinfo(&rpc, cfg.wallet);
 		rpc_disconnect(&rpc);
 		return ret;
 	}
-	if (cfg.netinfo) {
-		ret = handle_netinfo(&rpc);
+	if (cfg.netinfo >= 0) {
+		/* Check for "outonly"/"o" in remaining args */
+		int outonly = 0;
+		if (cfg.cmd_index >= 0 && cfg.cmd_index < argc) {
+			const char *arg = argv[cfg.cmd_index];
+			if (strcmp(arg, "outonly") == 0 || strcmp(arg, "o") == 0)
+				outonly = 1;
+		}
+		ret = handle_netinfo(&rpc, cfg.netinfo, outonly);
+		rpc_disconnect(&rpc);
+		return ret;
+	}
+	if (cfg.addrinfo) {
+		ret = handle_addrinfo(&rpc);
+		rpc_disconnect(&rpc);
+		return ret;
+	}
+	if (cfg.generate) {
+		ret = handle_generate(&rpc, argc, argv, cfg.cmd_index);
 		rpc_disconnect(&rpc);
 		return ret;
 	}
@@ -509,6 +900,23 @@ int main(int argc, char **argv)
 	/* Build and execute command */
 	int cmd_argc = argc - cfg.cmd_index - 1;
 	char **cmd_argv = &argv[cfg.cmd_index + 1];
+
+	/* If -stdinwalletpassphrase and command is walletpassphrase,
+	 * prepend the passphrase as first argument */
+	char **wp_argv = NULL;
+	if (cfg.stdinwalletpassphrase && wallet_passphrase[0] && command &&
+	    strcmp(command, "walletpassphrase") == 0) {
+		int wp_argc = cmd_argc + 1;
+		wp_argv = malloc(sizeof(char *) * wp_argc);
+		if (wp_argv) {
+			int i;
+			wp_argv[0] = wallet_passphrase;
+			for (i = 0; i < cmd_argc; i++)
+				wp_argv[i + 1] = cmd_argv[i];
+			cmd_argv = wp_argv;
+			cmd_argc = wp_argc;
+		}
+	}
 
 	/* Read additional args from stdin if requested */
 	char **all_argv = cmd_argv;
@@ -568,6 +976,7 @@ int main(int argc, char **argv)
 	if (stdin_buf) free(stdin_buf);
 	if (stdin_args) free(stdin_args);
 	if (all_argv != cmd_argv) free(all_argv);
+	if (wp_argv) free(wp_argv);
 
 	/* Output result */
 	if (result) {
@@ -587,6 +996,7 @@ int main(int argc, char **argv)
 
 	/* Cleanup */
 	rpc_disconnect(&rpc);
+	memset(wallet_passphrase, 0, sizeof(wallet_passphrase));
 
 	return ret;
 }

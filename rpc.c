@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -191,7 +192,7 @@ static int rpc_auth_from_config(RpcClient *client, const char *datadir)
 int rpc_auth_auto(RpcClient *client, const char *datadir)
 {
 	char path[1024];
-	const char *networks[] = {"signet", "testnet3", "regtest", "", NULL};
+	const char *networks[] = {"signet", "testnet3", "testnet4", "regtest", "", NULL};
 	int i;
 
 	/* Try cookie file in each network subdir */
@@ -234,6 +235,15 @@ int rpc_connect(RpcClient *client)
 		close(client->sock);
 		client->sock = -1;
 		return -1;
+	}
+
+	/* Apply socket timeout if set */
+	if (client->timeout > 0) {
+		struct timeval tv;
+		tv.tv_sec = client->timeout;
+		tv.tv_usec = 0;
+		setsockopt(client->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		setsockopt(client->sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	}
 
 	return 0;

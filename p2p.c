@@ -125,22 +125,24 @@ void sha256d(const uint8_t *data, size_t len, uint8_t *hash)
 uint32_t p2p_magic(Network net)
 {
 	switch (net) {
-	case NET_MAINNET: return 0xD9B4BEF9;
-	case NET_TESTNET: return 0x0709110B;
-	case NET_SIGNET:  return 0x0A03CF40;
-	case NET_REGTEST: return 0xDAB5BFFA;
-	default:          return 0xD9B4BEF9;
+	case NET_MAINNET:  return 0xD9B4BEF9;
+	case NET_TESTNET:  return 0x0709110B;
+	case NET_TESTNET4: return 0x1C163F28;
+	case NET_SIGNET:   return 0x0A03CF40;
+	case NET_REGTEST:  return 0xDAB5BFFA;
+	default:           return 0xD9B4BEF9;
 	}
 }
 
 int p2p_port(Network net)
 {
 	switch (net) {
-	case NET_MAINNET: return 8333;
-	case NET_TESTNET: return 18333;
-	case NET_SIGNET:  return 38333;
-	case NET_REGTEST: return 18444;
-	default:          return 8333;
+	case NET_MAINNET:  return 8333;
+	case NET_TESTNET:  return 18333;
+	case NET_TESTNET4: return 48333;
+	case NET_SIGNET:   return 38333;
+	case NET_REGTEST:  return 18444;
+	default:           return 8333;
 	}
 }
 
@@ -170,6 +172,12 @@ static const char *dns_seeds_testnet[] = {
 	NULL
 };
 
+static const char *dns_seeds_testnet4[] = {
+	"seed.testnet4.bitcoin.sprovoost.nl",
+	"seed.testnet4.wiz.biz",
+	NULL
+};
+
 int p2p_dns_seed_lookup(Network net, char ***ips_out, int max_results)
 {
 	const char **seeds;
@@ -179,9 +187,10 @@ int p2p_dns_seed_lookup(Network net, char ***ips_out, int max_results)
 	int i;
 
 	switch (net) {
-	case NET_MAINNET: seeds = dns_seeds_mainnet; break;
-	case NET_SIGNET:  seeds = dns_seeds_signet; break;
-	case NET_TESTNET: seeds = dns_seeds_testnet; break;
+	case NET_MAINNET:  seeds = dns_seeds_mainnet; break;
+	case NET_TESTNET:  seeds = dns_seeds_testnet; break;
+	case NET_TESTNET4: seeds = dns_seeds_testnet4; break;
+	case NET_SIGNET:   seeds = dns_seeds_signet; break;
 	default:
 		*ips_out = NULL;
 		return 0;
