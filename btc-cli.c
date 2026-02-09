@@ -20,7 +20,7 @@
 #include "json.h"
 #include "fallback.h"
 
-#define BTC_CLI_VERSION "0.8.0"
+#define BTC_CLI_VERSION "0.9.0"
 
 /* ANSI color codes */
 #define C_RESET   "\033[0m"
@@ -33,8 +33,8 @@
 /* Global color setting */
 static int use_color = 0;
 
-/* Pretty print JSON output with optional color */
-static void print_json_pretty(const char *json, int indent)
+/* Pretty print JSON output with optional color to specified stream */
+static void fprint_json_pretty(FILE *out, const char *json, int indent)
 {
 	const char *p = json;
 	int in_string = 0;
@@ -56,62 +56,84 @@ static void print_json_pretty(const char *json, int indent)
 					is_key = (*ahead == ':');
 				}
 				if (use_color)
-					printf("%s", is_key ? C_KEY : C_STRING);
+					fprintf(out, "%s", is_key ? C_KEY : C_STRING);
 			}
-			putchar(*p);
+			fputc(*p, out);
 			if (in_string) {
 				if (use_color)
-					printf("%s", C_RESET);
+					fprintf(out, "%s", C_RESET);
 				is_key = 0;
 			}
 			in_string = !in_string;
 		} else if (in_string) {
-			putchar(*p);
+			fputc(*p, out);
 		} else if (*p == '{' || *p == '[') {
-			if (use_color)
-				printf("%s", C_BRACE);
-			putchar(*p);
-			if (use_color)
-				printf("%s", C_RESET);
-			putchar('\n');
-			level++;
-			for (i = 0; i < level * 2; i++) putchar(' ');
+			/* Peek ahead for empty container {} or [] */
+			const char *peek = p + 1;
+			while (*peek == ' ' || *peek == '\t' || *peek == '\n' || *peek == '\r')
+				peek++;
+			char closing = (*p == '{') ? '}' : ']';
+			if (*peek == closing) {
+				/* Empty container — print compacted on same line */
+				if (use_color)
+					fprintf(out, "%s", C_BRACE);
+				fputc(*p, out);
+				fputc(closing, out);
+				if (use_color)
+					fprintf(out, "%s", C_RESET);
+				p = peek;  /* Skip to closing bracket (loop will advance past it) */
+			} else {
+				if (use_color)
+					fprintf(out, "%s", C_BRACE);
+				fputc(*p, out);
+				if (use_color)
+					fprintf(out, "%s", C_RESET);
+				fputc('\n', out);
+				level++;
+				for (i = 0; i < level * 2; i++) fputc(' ', out);
+			}
 		} else if (*p == '}' || *p == ']') {
-			putchar('\n');
+			fputc('\n', out);
 			level--;
-			for (i = 0; i < level * 2; i++) putchar(' ');
+			for (i = 0; i < level * 2; i++) fputc(' ', out);
 			if (use_color)
-				printf("%s", C_BRACE);
-			putchar(*p);
+				fprintf(out, "%s", C_BRACE);
+			fputc(*p, out);
 			if (use_color)
-				printf("%s", C_RESET);
+				fprintf(out, "%s", C_RESET);
 		} else if (*p == ',') {
-			putchar(*p);
-			putchar('\n');
-			for (i = 0; i < level * 2; i++) putchar(' ');
+			fputc(*p, out);
+			fputc('\n', out);
+			for (i = 0; i < level * 2; i++) fputc(' ', out);
 		} else if (*p == ':') {
-			putchar(*p);
-			putchar(' ');
+			fputc(*p, out);
+			fputc(' ', out);
 		} else if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
 			/* Skip whitespace - we add our own */
 		} else {
 			/* Numbers, booleans, null */
 			if (use_color) {
 				if (*p == 't' || *p == 'f' || *p == 'n')
-					printf("%s", C_BOOL);  /* true/false/null */
+					fprintf(out, "%s", C_BOOL);  /* true/false/null */
 				else if ((*p >= '0' && *p <= '9') || *p == '-' || *p == '.')
-					printf("%s", C_NUMBER);
+					fprintf(out, "%s", C_NUMBER);
 			}
-			putchar(*p);
+			fputc(*p, out);
 			/* Check if next char ends the token */
 			char next = *(p + 1);
 			if (use_color && (next == ',' || next == '}' || next == ']' ||
 			    next == ' ' || next == '\n' || next == '\0'))
-				printf("%s", C_RESET);
+				fprintf(out, "%s", C_RESET);
 		}
 		p++;
 	}
-	putchar('\n');
+	fputc('\n', out);
+}
+
+/* Convenience: print JSON to stdout */
+static void print_json_pretty(const char *json, int indent)
+{
+	fprint_json_pretty(stdout, json, indent);
 }
 
 /* Get cookie path for network */
@@ -300,17 +322,25 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 
 	printf("{\n");
 
+	/* Version from getnetworkinfo (display first, like bitcoin-cli) */
+	if (network) {
+		int version = (int)json_get_int(network, "version");
+		char subversion[256] = {0};
+		json_get_string(network, "subversion", subversion, sizeof(subversion));
+		printf("  \"version\": %d,\n", version);
+		if (subversion[0])
+			printf("  \"subversion\": \"%s\",\n", subversion);
+	}
+
 	/* Chain info */
 	if (blockchain) {
 		json_get_string(blockchain, "chain", buf, sizeof(buf));
 		printf("  \"chain\": \"%s\",\n", buf);
 		printf("  \"blocks\": %d,\n", (int)json_get_int(blockchain, "blocks"));
 		printf("  \"headers\": %d,\n", (int)json_get_int(blockchain, "headers"));
-		printf("  \"difficulty\": %.4g,\n", json_get_double(blockchain, "difficulty"));
-
-		double progress = json_get_double(blockchain, "verificationprogress");
-		if (progress > 0 && progress < 0.9999)
-			printf("  \"verificationprogress\": %.6f,\n", progress);
+		printf("  \"verificationprogress\": %.10g,\n",
+		       json_get_double(blockchain, "verificationprogress"));
+		printf("  \"difficulty\": %.10g,\n", json_get_double(blockchain, "difficulty"));
 	}
 
 	/* Network info */
@@ -439,6 +469,14 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		/* Wallet details */
 		char *winfo = rpc_call(rpc, "getwalletinfo", "[]");
 		if (winfo) {
+			char wname[256] = {0};
+			json_get_string(winfo, "walletname", wname, sizeof(wname));
+			printf("  \"walletname\": \"%s\",\n", wname);
+
+			int64_t unlocked = json_get_int(winfo, "unlocked_until");
+			if (unlocked > 0)
+				printf("  \"unlocked_until\": %lld,\n", (long long)unlocked);
+
 			printf("  \"keypoolsize\": %d,\n", (int)json_get_int(winfo, "keypoolsize"));
 			printf("  \"paytxfee\": %.8f\n", json_get_double(winfo, "paytxfee"));
 			free(winfo);
@@ -468,6 +506,8 @@ typedef struct {
 	int64_t last_transaction;
 	int64_t last_block;
 	int64_t conntime;
+	int bip152_hb_from;
+	int bip152_hb_to;
 	char addr[256];
 	char subver[256];
 } PeerRow;
@@ -552,6 +592,14 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 		pr->last_block = json_get_int(pj, "last_block");
 		pr->conntime = json_get_int(pj, "conntime");
 
+		/* BIP152 high-bandwidth */
+		{
+			const char *hb_from = json_find_value(pj, "bip152_hb_from");
+			const char *hb_to = json_find_value(pj, "bip152_hb_to");
+			pr->bip152_hb_from = (hb_from && strncmp(hb_from, "true", 4) == 0) ? 1 : 0;
+			pr->bip152_hb_to = (hb_to && strncmp(hb_to, "true", 4) == 0) ? 1 : 0;
+		}
+
 		/* Address and version */
 		json_get_string(pj, "addr", pr->addr, sizeof(pr->addr));
 		json_get_string(pj, "subver", pr->subver, sizeof(pr->subver));
@@ -568,7 +616,7 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 		printf("Peer connections:\n");
 		printf("  %3s  %3s  %-16s %-6s", "#", "<->", "type", "net");
 
-		printf("  %6s  %6s  %5s  %5s  %5s  %5s  %8s", "mping", "ping", "send", "recv", "txn", "blk", "age");
+		printf("  %6s  %6s  %5s  %5s  %5s  %5s  %2s  %8s", "mping", "ping", "send", "recv", "txn", "blk", "hb", "age");
 		if (level == 2 || level == 4)
 			printf("  %-21s", "addr");
 		if (level == 3 || level == 4)
@@ -611,6 +659,16 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 			if (recv_ago >= 0) printf("  %5d", recv_ago); else printf("  %5s", "-");
 			if (tx_ago >= 0) printf("  %5d", tx_ago); else printf("  %5s", "-");
 			if (blk_ago >= 0) printf("  %5d", blk_ago); else printf("  %5s", "-");
+
+			/* hb column: compact block relay status
+			 * "." = we selected peer as high-bandwidth (hb_to)
+			 * "*" = peer selected us as high-bandwidth (hb_from) */
+			{
+				char hb_str[3] = "  ";
+				if (pr->bip152_hb_to) hb_str[0] = '.';
+				if (pr->bip152_hb_from) hb_str[1] = '*';
+				printf("  %2s", hb_str);
+			}
 			printf("  %8s", age_str);
 
 			if (level == 2 || level == 4)
@@ -670,7 +728,7 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 	return 0;
 }
 
-/* Connect with retry for -rpcwait */
+/* Connect with retry for -rpcwait, including warmup wait (error -28) */
 static int rpc_connect_wait(RpcClient *rpc, int timeout_secs)
 {
 	time_t start = time(NULL);
@@ -679,9 +737,32 @@ static int rpc_connect_wait(RpcClient *rpc, int timeout_secs)
 	while (1) {
 		attempt++;
 		if (rpc_connect(rpc) == 0) {
-			return 0;  /* Success */
+			/* TCP connected — now check if node is warmed up
+			 * by making a test RPC call */
+			char *response = rpc_call(rpc, "getnetworkinfo", "[]");
+			if (response) {
+				/* Check for warmup error (code -28) */
+				int error_code = 0;
+				char *result = method_extract_result(response, &error_code);
+				free(result);
+				free(response);
+
+				if (error_code == -28) {
+					/* Node is warming up, disconnect and retry */
+					if (attempt == 1)
+						fprintf(stderr, "Waiting for server warmup...\n");
+					rpc_disconnect(rpc);
+					goto wait_and_retry;
+				}
+				/* Node is ready */
+				return 0;
+			}
+			/* No response — node might be mid-startup, retry */
+			rpc_disconnect(rpc);
+			goto wait_and_retry;
 		}
 
+wait_and_retry:
 		/* Check timeout */
 		if (timeout_secs > 0) {
 			time_t elapsed = time(NULL) - start;
@@ -761,8 +842,6 @@ int main(int argc, char **argv)
 			}
 		} else {
 			config_print_usage(argv[0]);
-			printf("\n");
-			method_list_all();
 		}
 		return 0;
 	}
@@ -943,13 +1022,30 @@ int main(int argc, char **argv)
 			if (stdin_buf) {
 				stdin_buf[buf_len] = '\0';
 
-				/* Parse stdin into arguments (whitespace separated) */
+				/* Parse stdin into arguments: one argument per line
+				 * (matches bitcoin-cli behavior) */
 				stdin_args = malloc(sizeof(char *) * 64);
 				if (stdin_args) {
-					char *tok = strtok(stdin_buf, " \t\n\r");
-					while (tok && stdin_count < 64) {
-						stdin_args[stdin_count++] = tok;
-						tok = strtok(NULL, " \t\n\r");
+					char *line = stdin_buf;
+					while (*line && stdin_count < 64) {
+						/* Find end of line */
+						char *eol = strchr(line, '\n');
+						if (eol)
+							*eol = '\0';
+
+						/* Trim trailing \r */
+						size_t llen = strlen(line);
+						if (llen > 0 && line[llen - 1] == '\r')
+							line[llen - 1] = '\0';
+
+						/* Skip empty lines */
+						if (line[0] != '\0')
+							stdin_args[stdin_count++] = line;
+
+						if (eol)
+							line = eol + 1;
+						else
+							break;
 					}
 
 					/* Combine cmd_argv with stdin_args */
@@ -984,12 +1080,15 @@ int main(int argc, char **argv)
 		const char *p = result;
 		while (*p == ' ' || *p == '\t' || *p == '\n') p++;
 
+		/* Errors go to stderr, normal output to stdout */
+		FILE *dest = (ret != 0) ? stderr : stdout;
+
 		if (*p == '{' || *p == '[') {
 			/* Pretty print JSON */
-			print_json_pretty(result, 0);
+			fprint_json_pretty(dest, result, 0);
 		} else {
 			/* Plain output */
-			printf("%s\n", result);
+			fprintf(dest, "%s\n", result);
 		}
 		free(result);
 	}

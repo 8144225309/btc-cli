@@ -243,6 +243,10 @@ GENERIC_HANDLER(waitforblockheight)
 GENERIC_HANDLER(waitfornewblock)
 GENERIC_HANDLER(walletdisplayaddress)
 
+/* Missing blockchain methods */
+GENERIC_HANDLER(invalidateblock)
+GENERIC_HANDLER(reconsiderblock)
+
 /* Missing wallet methods */
 GENERIC_HANDLER(addmultisigaddress)
 GENERIC_HANDLER(newkeypool)
@@ -925,6 +929,14 @@ static const MethodDef methods[] = {
 	 cmd_preciousblock,
 	 {{"blockhash", PARAM_HEX, 1, "Block hash"}}, 1},
 
+	{"invalidateblock", "blockchain", "Permanently mark a block as invalid",
+	 cmd_invalidateblock,
+	 {{"blockhash", PARAM_HEX, 1, "Block hash"}}, 1},
+
+	{"reconsiderblock", "blockchain", "Remove invalidity status of a block",
+	 cmd_reconsiderblock,
+	 {{"blockhash", PARAM_HEX, 1, "Block hash"}}, 1},
+
 	{"pruneblockchain", "blockchain", "Prune blockchain",
 	 cmd_pruneblockchain,
 	 {{"height", PARAM_INT, 1, "Prune to height"}}, 1},
@@ -1305,6 +1317,10 @@ char *method_build_named_params(const MethodDef *method, int argc, char **argv)
 	size_t pos = 0;
 	int i, first = 1;
 
+	/* Collect positional (non-key=value) args */
+	char *positional[64];
+	int pos_count = 0;
+
 	buf = malloc(bufsize);
 	if (!buf) return NULL;
 
@@ -1312,7 +1328,12 @@ char *method_build_named_params(const MethodDef *method, int argc, char **argv)
 
 	for (i = 0; i < argc; i++) {
 		char *eq = strchr(argv[i], '=');
-		if (!eq) continue;
+		if (!eq) {
+			/* Positional arg — collect for "args" array */
+			if (pos_count < 64)
+				positional[pos_count++] = argv[i];
+			continue;
+		}
 
 		char key[256];
 		size_t keylen = eq - argv[i];
@@ -1363,6 +1384,36 @@ char *method_build_named_params(const MethodDef *method, int argc, char **argv)
 		} else {
 			pos += snprintf(buf + pos, bufsize - pos, "\"%s\"", value);
 		}
+	}
+
+	/* Append positional args as "args" array */
+	if (pos_count > 0) {
+		/* Ensure buffer space */
+		size_t needed = 32;
+		for (i = 0; i < pos_count; i++)
+			needed += strlen(positional[i]) + 16;
+		while (pos + needed > bufsize) {
+			bufsize *= 2;
+			char *newbuf = realloc(buf, bufsize);
+			if (!newbuf) { free(buf); return NULL; }
+			buf = newbuf;
+		}
+
+		if (!first) buf[pos++] = ',';
+		pos += snprintf(buf + pos, bufsize - pos, "\"args\":[");
+		for (i = 0; i < pos_count; i++) {
+			if (i > 0) buf[pos++] = ',';
+			/* Type inference for positional args */
+			if (is_number(positional[i]))
+				pos += snprintf(buf + pos, bufsize - pos, "%s", positional[i]);
+			else if (is_bool(positional[i]))
+				pos += snprintf(buf + pos, bufsize - pos, "%s", positional[i]);
+			else if (positional[i][0] == '[' || positional[i][0] == '{')
+				pos += snprintf(buf + pos, bufsize - pos, "%s", positional[i]);
+			else
+				pos += snprintf(buf + pos, bufsize - pos, "\"%s\"", positional[i]);
+		}
+		buf[pos++] = ']';
 	}
 
 	buf[pos++] = '}';
@@ -1473,7 +1524,7 @@ char *method_extract_result(const char *response, int *error_code)
 			return out;
 		}
 	} else if (strncmp(result, "null", 4) == 0) {
-		return strdup("null");
+		return NULL;
 	} else {
 		/* Number or boolean - find end */
 		const char *end = result;
@@ -1527,5 +1578,5 @@ static int cmd_generic(RpcClient *rpc, const char *method, int argc, char **argv
 	*out = method_extract_result(response, &error_code);
 	free(response);
 
-	return error_code != 0 ? 1 : 0;
+	return error_code != 0 ? abs(error_code) : 0;
 }
