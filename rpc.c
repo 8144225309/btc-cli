@@ -249,7 +249,7 @@ int rpc_connect(RpcClient *client)
 	return 0;
 }
 
-static char *read_http_response(int sock)
+static char *read_http_response(int sock, int *http_status_out)
 {
 	char *buffer;
 	size_t buf_size = 1024 * 1024;
@@ -261,6 +261,9 @@ static char *read_http_response(int sock)
 	size_t header_len;
 	size_t body_received;
 	int http_status = 0;
+
+	if (http_status_out)
+		*http_status_out = 0;
 
 	buffer = malloc(buf_size);
 	if (!buffer)
@@ -281,16 +284,16 @@ static char *read_http_response(int sock)
 			if (strncmp(buffer, "HTTP/1.", 7) == 0)
 				sscanf(buffer + 9, "%d", &http_status);
 
+			if (http_status_out)
+				*http_status_out = http_status;
+
 			/* For non-2xx: return JSON body for HTTP 500 (RPC errors),
 			 * synthetic error for 401 (auth failure),
 			 * and NULL for everything else */
 			if (http_status < 200 || http_status >= 300) {
 				if (http_status == 401) {
 					free(buffer);
-					return strdup("{\"result\":null,\"error\":{\"code\":-1,"
-						"\"message\":\"Authorization failed: "
-						"Incorrect rpcuser or rpcpassword "
-						"(authorization failed)\"},\"id\":1}");
+					return NULL;
 				}
 				if (http_status != 500) {
 					free(buffer);
@@ -343,6 +346,8 @@ char *rpc_call(RpcClient *client, const char *method, const char *params)
 	ssize_t sent;
 	size_t body_len, request_len;
 
+	client->last_http_error = 0;
+
 	if (client->sock < 0)
 		return NULL;
 
@@ -393,7 +398,13 @@ char *rpc_call(RpcClient *client, const char *method, const char *params)
 	if (sent < 0)
 		return NULL;
 
-	return read_http_response(client->sock);
+	{
+		int http_status = 0;
+		char *result = read_http_response(client->sock, &http_status);
+		if (http_status >= 400)
+			client->last_http_error = http_status;
+		return result;
+	}
 }
 
 void rpc_disconnect(RpcClient *client)

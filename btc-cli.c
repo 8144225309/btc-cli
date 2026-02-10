@@ -20,7 +20,7 @@
 #include "json.h"
 #include "fallback.h"
 
-#define BTC_CLI_VERSION "0.9.0"
+#define BTC_CLI_VERSION "0.10.0"
 
 /* ANSI color codes */
 #define C_RESET   "\033[0m"
@@ -128,12 +128,6 @@ static void fprint_json_pretty(FILE *out, const char *json, int indent)
 		p++;
 	}
 	fputc('\n', out);
-}
-
-/* Convenience: print JSON to stdout */
-static void print_json_pretty(const char *json, int indent)
-{
-	fprint_json_pretty(stdout, json, indent);
 }
 
 /* Get cookie path for network */
@@ -295,12 +289,15 @@ static int handle_generate(RpcClient *rpc, int argc, char **argv, int cmd_index)
 	free(response);
 
 	if (result) {
+		/* Wrap result in {"address": "<addr>", "blocks": [...]} */
+		printf("{\n  \"address\": \"%s\",\n  \"blocks\": ", address);
 		const char *p = result;
 		while (*p == ' ' || *p == '\t' || *p == '\n') p++;
 		if (*p == '{' || *p == '[')
-			print_json_pretty(result, 0);
+			fprint_json_pretty(stdout, result, 1);
 		else
 			printf("%s\n", result);
+		printf("}\n");
 		free(result);
 	}
 
@@ -375,14 +372,12 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		}
 
 		printf("  \"relayfee\": %.8f,\n", json_get_double(network, "relayfee"));
-
-		char warnings[1024] = {0};
-		json_get_string(network, "warnings", warnings, sizeof(warnings));
-		printf("  \"warnings\": \"%s\",\n", warnings);
 	}
 
-	/* Wallet info — multi-wallet support */
+	/* Detect wallet situation before printing warnings (need to know if comma follows) */
 	int multi_wallet = 0;
+	int no_wallet = 0;
+	int wallet_count = 0;
 	walletlist = rpc_call(rpc, "listwallets", "[]");
 	if (walletlist) {
 		/* Find the result array: locate the [ ... ] within "result" */
@@ -392,23 +387,46 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		while (*arr_start && *arr_start != '[') arr_start++;
 
 		if (*arr_start == '[') {
-			const char *arr_end = json_find_closing(arr_start);
-			if (!arr_end) arr_end = arr_start;
+			const char *arr_end_tmp = json_find_closing(arr_start);
+			if (!arr_end_tmp) arr_end_tmp = arr_start;
 
-			/* Count wallet names within the array bounds */
-			int wallet_count = 0;
 			const char *q = arr_start + 1;
-			while (q < arr_end) {
+			while (q < arr_end_tmp) {
 				if (*q == '"') {
 					wallet_count++;
 					q++;
-					while (q < arr_end && *q != '"') {
+					while (q < arr_end_tmp && *q != '"') {
 						if (*q == '\\') q++;
 						q++;
 					}
 				}
-				if (q < arr_end) q++;
+				if (q < arr_end_tmp) q++;
 			}
+
+			if (wallet_count == 0 && !wallet_name[0])
+				no_wallet = 1;
+		}
+	}
+
+	/* Print warnings line — no trailing comma if no wallet section follows */
+	if (network) {
+		char warnings[1024] = {0};
+		json_get_string(network, "warnings", warnings, sizeof(warnings));
+		if (no_wallet)
+			printf("  \"warnings\": \"%s\"\n", warnings);
+		else
+			printf("  \"warnings\": \"%s\",\n", warnings);
+	}
+
+	/* Wallet info — multi-wallet support */
+	if (walletlist && !no_wallet) {
+		const char *arr_start = json_find_value(walletlist, "result");
+		if (!arr_start) arr_start = walletlist;
+		while (*arr_start && *arr_start != '[') arr_start++;
+
+		if (*arr_start == '[') {
+			const char *arr_end = json_find_closing(arr_start);
+			if (!arr_end) arr_end = arr_start;
 
 			if (wallet_count > 1 && !wallet_name[0]) {
 				/* Multiple wallets, no -rpcwallet specified: show all balances */
@@ -451,10 +469,10 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 				printf("\n  }\n");
 			}
 		}
-		free(walletlist);
 	}
+	free(walletlist);
 
-	if (!multi_wallet) {
+	if (!multi_wallet && !no_wallet) {
 		/* Single wallet or specific -rpcwallet */
 		walletinfo = rpc_call(rpc, "getbalances", "[]");
 		if (walletinfo) {
@@ -481,9 +499,8 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 			printf("  \"paytxfee\": %.8f\n", json_get_double(winfo, "paytxfee"));
 			free(winfo);
 		} else {
-			/* Remove trailing comma from warnings line if no wallet */
-			/* Already printed, just close cleanly */
-			printf("  \"wallet\": null\n");
+			/* No wallet info available — skip wallet section */
+			no_wallet = 1;
 		}
 	}
 
@@ -928,8 +945,7 @@ int main(int argc, char **argv)
 				fprintf(stderr, "warning: Could not connect to %s:%d — using fallbacks\n",
 				        cfg.host, cfg.port);
 			} else {
-				fprintf(stderr, "error: Could not connect to %s:%d\n", cfg.host, cfg.port);
-				fprintf(stderr, "Is bitcoind running?\n");
+				fprintf(stderr, "error: timeout on transient error: Could not connect to the server %s:%d\n\nMake sure the bitcoind server is running and that you are connecting to the correct RPC port.\n", cfg.host, cfg.port);
 				return 1;
 			}
 		}
@@ -1063,6 +1079,16 @@ int main(int argc, char **argv)
 				}
 			}
 		}
+	}
+
+	/* Error on empty stdin input */
+	if (cfg.stdin_rpc && stdin_count == 0) {
+		fprintf(stderr, "error: Reading from stdin\n");
+		if (stdin_buf) free(stdin_buf);
+		if (stdin_args) free(stdin_args);
+		if (wp_argv) free(wp_argv);
+		rpc_disconnect(&rpc);
+		return 1;
 	}
 
 	/* Execute command handler */
