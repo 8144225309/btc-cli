@@ -243,7 +243,10 @@ GENERIC_HANDLER(waitforblockheight)
 GENERIC_HANDLER(waitfornewblock)
 GENERIC_HANDLER(walletdisplayaddress)
 
-/* Missing blockchain methods */
+/* Missing blockchain/mempool methods */
+GENERIC_HANDLER(getorphantxs)
+GENERIC_HANDLER(getrawaddrman)
+
 GENERIC_HANDLER(invalidateblock)
 GENERIC_HANDLER(reconsiderblock)
 
@@ -1148,6 +1151,14 @@ static const MethodDef methods[] = {
 	 cmd_sethdseed,
 	 {{"newkeypool", PARAM_BOOL, 0, "Flush old keypool"},
 	  {"seed", PARAM_STRING, 0, "WIF private key for seed"}}, 2},
+
+	/* Missing mempool/address manager methods */
+	{"getorphantxs", "blockchain", "Get orphan transactions",
+	 cmd_getorphantxs,
+	 {{"verbosity", PARAM_INT, 0, "0=txids, 1=verbose, 2=full"}}, 1},
+
+	{"getrawaddrman", "network", "Get raw address manager data",
+	 cmd_getrawaddrman, {}, 0},
 
 	/* Sentinel */
 	{NULL, NULL, NULL, NULL, {}, 0}
