@@ -239,14 +239,25 @@ echo ""
 > "$LOGFILE"
 
 mkdir -p "$DATADIR"
+
+# Generate rpcauth so both password auth AND cookie file are available
+RPCAUTH_LINE=$(python3 <<'PYEOF'
+import hashlib, hmac, os
+salt = os.urandom(16).hex()
+password = "testpass"
+hash_val = hmac.new(salt.encode("utf-8"), password.encode("utf-8"), hashlib.sha256).hexdigest()
+print(f"rpcauth=testuser:{salt}${hash_val}")
+PYEOF
+)
+
 cat > "$DATADIR/bitcoin.conf" <<ENDCONF
 regtest=1
-rpcuser=testuser
-rpcpassword=testpass
+$RPCAUTH_LINE
 [regtest]
 rpcport=$RPCPORT
 server=1
 txindex=1
+fallbackfee=0.00001
 ENDCONF
 
 echo "Starting bitcoind..."
@@ -526,10 +537,38 @@ else
     skip_test "A5.12 createpsbt" "no raw tx"
 fi
 
-# combinerawtransaction — needs multiple signed txs, skip for now
-skip_test "A5.13 combinerawtransaction" "complex setup needed"
-skip_test "A5.14 combinepsbt" "complex setup needed"
-skip_test "A5.15 finalizepsbt" "complex setup needed"
+# combinerawtransaction — combine a signed tx with itself
+if [ -n "$SIGNED_HEX" ]; then
+    compare_nonempty "A5.13 combinerawtransaction" combinerawtransaction "[\"$SIGNED_HEX\"]"
+else
+    skip_test "A5.13 combinerawtransaction" "no signed tx"
+fi
+
+# combinepsbt + finalizepsbt — create a funded PSBT, process and finalize
+COMBINE_ADDR=$(ref getnewaddress 2>/dev/null)
+COMBINE_RAW=$(ref createrawtransaction "[]" "{\"$COMBINE_ADDR\":0.001}" 2>/dev/null) || true
+if [ -n "$COMBINE_RAW" ]; then
+    COMBINE_FUNDED=$(ref fundrawtransaction "$COMBINE_RAW" 2>/dev/null) || true
+    COMBINE_HEX=$(echo "$COMBINE_FUNDED" | python3 -c "import sys,json; print(json.load(sys.stdin).get('hex',''))" 2>/dev/null) || true
+    if [ -n "$COMBINE_HEX" ]; then
+        COMBINE_PSBT=$(ref converttopsbt "$COMBINE_HEX" 2>/dev/null) || true
+        PROCESSED=$(ref walletprocesspsbt "$COMBINE_PSBT" 2>/dev/null) || true
+        PROCESSED_PSBT=$(echo "$PROCESSED" | python3 -c "import sys,json; print(json.load(sys.stdin).get('psbt',''))" 2>/dev/null) || true
+        if [ -n "$PROCESSED_PSBT" ]; then
+            compare_nonempty "A5.14 combinepsbt" combinepsbt "[\"$PROCESSED_PSBT\"]"
+            compare_json_keys "A5.15 finalizepsbt" finalizepsbt "$PROCESSED_PSBT"
+        else
+            skip_test "A5.14 combinepsbt" "processing failed"
+            skip_test "A5.15 finalizepsbt" "processing failed"
+        fi
+    else
+        skip_test "A5.14 combinepsbt" "funding failed"
+        skip_test "A5.15 finalizepsbt" "funding failed"
+    fi
+else
+    skip_test "A5.14 combinepsbt" "no raw tx"
+    skip_test "A5.15 finalizepsbt" "no raw tx"
+fi
 
 # ─── A6: Utility ─────────────────────────────────────────────────────
 subsection "A6: Utility Methods"
@@ -543,29 +582,47 @@ DESC="wpkh($ADDR)"
 compare_json_keys "A6.04 getdescriptorinfo" getdescriptorinfo "$DESC"
 
 # signmessagewithprivkey + verifymessage
-if [ -n "$SIGNADDR" ]; then
-    PRIVKEY=$(ref dumpprivkey "$SIGNADDR" 2>/dev/null) || true
-    if [ -n "$PRIVKEY" ]; then
-        SIG=$(ref signmessagewithprivkey "$PRIVKEY" "parity test" 2>/dev/null) || true
-        compare_nonempty "A6.05 signmessagewithprivkey" signmessagewithprivkey "$PRIVKEY" "parity test"
-        if [ -n "$SIG" ]; then
-            compare_rpc "A6.06 verifymessage" verifymessage "$SIGNADDR" "$SIG" "parity test"
-        else
-            skip_test "A6.06 verifymessage" "no signature"
-        fi
+# Generate a random regtest WIF key (descriptor wallets don't support dumpprivkey)
+PRIVKEY=$(python3 <<'PYEOF'
+import hashlib, os
+key = os.urandom(32)
+ext = bytes([0xef]) + key + bytes([0x01])
+cksum = hashlib.sha256(hashlib.sha256(ext).digest()).digest()[:4]
+raw = ext + cksum
+alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+n = int.from_bytes(raw, "big")
+result = ""
+while n > 0:
+    n, rem = divmod(n, 58)
+    result = alphabet[rem] + result
+print(result)
+PYEOF
+) || true
+if [ -n "$PRIVKEY" ]; then
+    # Derive the P2PKH address for verifymessage
+    VERIFY_ADDR=$(ref getdescriptorinfo "pkh($PRIVKEY)" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('descriptor',''))" 2>/dev/null) || true
+    if [ -n "$VERIFY_ADDR" ]; then
+        VERIFY_ADDR=$(ref deriveaddresses "$VERIFY_ADDR" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)[0])" 2>/dev/null) || true
+    fi
+    SIG=$(ref signmessagewithprivkey "$PRIVKEY" "parity test" 2>/dev/null) || true
+    compare_nonempty "A6.05 signmessagewithprivkey" signmessagewithprivkey "$PRIVKEY" "parity test"
+    if [ -n "$SIG" ] && [ -n "$VERIFY_ADDR" ]; then
+        compare_rpc "A6.06 verifymessage" verifymessage "$VERIFY_ADDR" "$SIG" "parity test"
     else
-        skip_test "A6.05 signmessagewithprivkey" "no privkey"
-        skip_test "A6.06 verifymessage" "no privkey"
+        skip_test "A6.06 verifymessage" "no signature or address"
     fi
 else
-    skip_test "A6.05 signmessagewithprivkey" "no legacy addr"
-    skip_test "A6.06 verifymessage" "no legacy addr"
+    skip_test "A6.05 signmessagewithprivkey" "key generation failed"
+    skip_test "A6.06 verifymessage" "key generation failed"
 fi
 
 compare_rpc "A6.07 getindexinfo" getindexinfo
 
-# deriveaddresses
-DERIVE_DESC=$(ref getdescriptorinfo "wpkh($ADDR)" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('descriptor',''))" 2>/dev/null) || true
+# deriveaddresses — wpkh() needs a pubkey, not an address
+DERIVE_PUBKEY=$(ref getaddressinfo "$ADDR" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('pubkey',''))" 2>/dev/null) || true
+if [ -n "$DERIVE_PUBKEY" ]; then
+    DERIVE_DESC=$(ref getdescriptorinfo "wpkh($DERIVE_PUBKEY)" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('descriptor',''))" 2>/dev/null) || true
+fi
 if [ -n "$DERIVE_DESC" ]; then
     compare_rpc "A6.08 deriveaddresses" deriveaddresses "$DERIVE_DESC"
 else
@@ -1626,13 +1683,36 @@ else
 fi
 
 # bumpfee — need an rbf tx in mempool
-# Use one of the txids we just created
-BUMP_TXID="$btc_out"
-if [ -n "$BUMP_TXID" ]; then
-    BUMP_TXID=$(echo "$BUMP_TXID" | python3 -c "import sys,json; print(json.load(sys.stdin).get('txid',''))" 2>/dev/null) || true
-fi
-if [ -n "$BUMP_TXID" ] && [ ${#BUMP_TXID} -eq 64 ]; then
-    compare_json_keys "A9.11 bumpfee" -rpcwallet=test_wallet bumpfee "$BUMP_TXID"
+# bumpfee is not idempotent: the first CLI bumps, second sees "already bumped".
+# Use separate txids: btc_out for btc, ref_out for ref.
+BTC_BUMP_TXID=$(echo "$btc_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('txid',''))" 2>/dev/null) || true
+REF_BUMP_TXID=$(echo "$ref_out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('txid',''))" 2>/dev/null) || true
+if [ -n "$BTC_BUMP_TXID" ] && [ ${#BTC_BUMP_TXID} -eq 64 ] && [ -n "$REF_BUMP_TXID" ] && [ ${#REF_BUMP_TXID} -eq 64 ]; then
+    btc_bump=$(btc -rpcwallet=test_wallet bumpfee "$BTC_BUMP_TXID" 2>/dev/null) || true
+    ref_bump=$(ref -rpcwallet=test_wallet bumpfee "$REF_BUMP_TXID" 2>/dev/null) || true
+    btc_keys=$(echo "$btc_bump" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if isinstance(d, dict): print('\n'.join(sorted(d.keys())))
+except: pass
+" 2>/dev/null) || true
+    ref_keys=$(echo "$ref_bump" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if isinstance(d, dict): print('\n'.join(sorted(d.keys())))
+except: pass
+" 2>/dev/null) || true
+    missing=$(comm -23 <(echo "$ref_keys") <(echo "$btc_keys") | tr '\n' ',')
+    extra=$(comm -13 <(echo "$ref_keys") <(echo "$btc_keys") | tr '\n' ',')
+    if [ -z "$missing" ] && [ -z "$extra" ]; then
+        pass "A9.11 bumpfee (keys match)"
+    elif [ -z "$missing" ]; then
+        diff_note "A9.11 bumpfee" "extra keys in btc: $extra"
+    else
+        fail "A9.11 bumpfee" "missing keys in btc: ${missing} extra: ${extra}"
+    fi
 else
     skip_test "A9.11 bumpfee" "no suitable txid"
 fi
