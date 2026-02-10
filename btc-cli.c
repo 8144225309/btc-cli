@@ -14,6 +14,8 @@
 #include <signal.h>
 #endif
 
+#include <ctype.h>
+
 #include "config.h"
 #include "methods.h"
 #include "rpc.h"
@@ -32,6 +34,60 @@
 
 /* Global color setting */
 static int use_color = 0;
+
+/* Build raw JSON params array from argv with type inference (for unknown methods) */
+static char *build_raw_params(int argc, char **argv)
+{
+	char *buf;
+	size_t bufsize = 4096;
+	size_t pos = 0;
+	int i;
+
+	buf = malloc(bufsize);
+	if (!buf) return NULL;
+
+	buf[pos++] = '[';
+
+	for (i = 0; i < argc; i++) {
+		const char *arg = argv[i];
+		size_t arglen = strlen(arg);
+
+		while (pos + arglen + 64 > bufsize) {
+			bufsize *= 2;
+			buf = realloc(buf, bufsize);
+			if (!buf) return NULL;
+		}
+
+		if (i > 0) buf[pos++] = ',';
+
+		/* Type inference */
+		if (strcmp(arg, "true") == 0 || strcmp(arg, "false") == 0 ||
+		    strcmp(arg, "null") == 0) {
+			pos += snprintf(buf + pos, bufsize - pos, "%s", arg);
+		} else if (arg[0] == '[' || arg[0] == '{') {
+			/* Already JSON */
+			pos += snprintf(buf + pos, bufsize - pos, "%s", arg);
+		} else {
+			/* Check if numeric */
+			const char *s = arg;
+			int is_num = 1;
+			if (*s == '-') s++;
+			if (!*s) is_num = 0;
+			while (*s) {
+				if (!isdigit(*s) && *s != '.') { is_num = 0; break; }
+				s++;
+			}
+			if (is_num)
+				pos += snprintf(buf + pos, bufsize - pos, "%s", arg);
+			else
+				pos += snprintf(buf + pos, bufsize - pos, "\"%s\"", arg);
+		}
+	}
+
+	buf[pos++] = ']';
+	buf[pos] = '\0';
+	return buf;
+}
 
 /* Pretty print JSON output with optional color to specified stream */
 static void fprint_json_pretty(FILE *out, const char *json, int indent)
@@ -881,11 +937,7 @@ int main(int argc, char **argv)
 	if (need_command) {
 		command = argv[cfg.cmd_index];
 		method = method_find(command);
-		if (!method) {
-			fprintf(stderr, "error: Unknown command: %s\n", command);
-			fprintf(stderr, "Use -help for list of commands\n");
-			return 1;
-		}
+		/* Unknown methods are forwarded to the server (like bitcoin-cli) */
 	}
 
 	/* Initialize RPC client */
@@ -1092,13 +1144,52 @@ int main(int argc, char **argv)
 	}
 
 	/* Execute command handler */
-	ret = method->handler(&rpc, all_argc, all_argv, &result);
+	if (method) {
+		ret = method->handler(&rpc, all_argc, all_argv, &result);
+	} else {
+		/* Unknown method: forward to server (matches bitcoin-cli behavior) */
+		char *params = build_raw_params(all_argc, all_argv);
+		char *response = rpc_call(&rpc, command, params ? params : "[]");
+		free(params);
+		if (!response) {
+			if (rpc.last_http_error == 401) {
+				result = strdup("error: Authorization failed: Incorrect rpcuser or rpcpassword");
+			} else {
+				result = strdup("error: Could not connect to the server");
+			}
+			ret = 1;
+		} else {
+			int error_code;
+			result = method_extract_result(response, &error_code);
+			free(response);
+			ret = error_code != 0 ? abs(error_code) : 0;
+		}
+	}
 
 	/* Cleanup stdin resources */
 	if (stdin_buf) free(stdin_buf);
 	if (stdin_args) free(stdin_args);
 	if (all_argv != cmd_argv) free(all_argv);
 	if (wp_argv) free(wp_argv);
+
+	/* Special output handling for createwallet/loadwallet:
+	 * bitcoin-cli extracts just the "name" field, prints warning if any */
+	if (ret == 0 && result && command &&
+	    (strcmp(command, "createwallet") == 0 || strcmp(command, "loadwallet") == 0)) {
+		const char *p = result;
+		while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+		if (*p == '{') {
+			char name[256] = {0};
+			char warning[2048] = {0};
+			json_get_string(result, "name", name, sizeof(name));
+			json_get_string(result, "warning", warning, sizeof(warning));
+			free(result);
+			result = NULL;
+			if (warning[0]) {
+				result = strdup(warning);
+			}
+		}
+	}
 
 	/* Output result */
 	if (result) {
