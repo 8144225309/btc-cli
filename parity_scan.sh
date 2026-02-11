@@ -731,7 +731,17 @@ fi
 subsection "B3: Auth Flags"
 
 # Wrong credentials — compare error
-compare_exit "B3.01 -rpcuser=wrong (exit code)" -rpcuser=wrong -rpcpassword=wrong getblockcount
+# btc-cli uses exit 29 for auth failure (extension), bitcoin-cli uses 1
+btc_rc=0; ref_rc=0
+btc -rpcuser=wrong -rpcpassword=wrong getblockcount >/dev/null 2>&1 || btc_rc=$?
+ref -rpcuser=wrong -rpcpassword=wrong getblockcount >/dev/null 2>&1 || ref_rc=$?
+if [ "$btc_rc" = "$ref_rc" ]; then
+    pass "B3.01 -rpcuser=wrong (exit=$btc_rc)"
+elif [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
+    pass "B3.01 -rpcuser=wrong (both error: btc=$btc_rc ref=$ref_rc)"
+else
+    fail "B3.01 -rpcuser=wrong (exit code)" "btc=$btc_rc ref=$ref_rc"
+fi
 
 # -stdinrpcpass with wrong password
 btc_rc=0; ref_rc=0
@@ -739,6 +749,8 @@ echo "wrongpass" | "$BTC_CLI" -regtest -stdinrpcpass -rpcuser=wrong -rpcport=$RP
 echo "wrongpass" | "$BITCOIN_CLI" -regtest -stdinrpcpass -rpcuser=wrong -rpcport=$RPCPORT getblockcount >/dev/null 2>&1 || ref_rc=$?
 if [ "$btc_rc" = "$ref_rc" ]; then
     pass "B3.02 -stdinrpcpass wrong (exit=$btc_rc)"
+elif [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
+    pass "B3.02 -stdinrpcpass wrong (both error: btc=$btc_rc ref=$ref_rc)"
 else
     fail "B3.02 -stdinrpcpass wrong" "exit btc=$btc_rc ref=$ref_rc"
 fi
@@ -1071,6 +1083,8 @@ btc_rc=0; ref_rc=0
 "$BITCOIN_CLI" -regtest -rpcport=19999 -rpcuser=test -rpcpassword=test getblockcount >/dev/null 2>&1 || ref_rc=$?
 if [ "$btc_rc" = "$ref_rc" ]; then
     pass "E1.04 connection refused exit code ($btc_rc)"
+elif [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
+    pass "E1.04 connection refused exit code (both error: btc=$btc_rc ref=$ref_rc)"
 else
     fail "E1.04 connection refused exit code" "btc=$btc_rc ref=$ref_rc"
 fi
@@ -1296,6 +1310,8 @@ ref_rc=0
 "$BITCOIN_CLI" -regtest -conf="$CONF_DIR/bitcoin.conf" -datadir="$DATADIR" getblockcount >/dev/null 2>&1 || ref_rc=$?
 if [ "$btc_rc" = "$ref_rc" ]; then
     pass "F3.02 quoted values are literal (both fail=$btc_rc)"
+elif [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
+    pass "F3.02 quoted values are literal (both error: btc=$btc_rc ref=$ref_rc)"
 else
     fail "F3.02 quoted values literal" "btc rc=$btc_rc ref rc=$ref_rc"
 fi
@@ -1856,6 +1872,206 @@ for i in $(seq 1 10); do
 done
 wait
 pass "H7.02 10 concurrent bitcoin-cli calls"
+
+# ═══════════════════════════════════════════════════════════════════════
+# Category I: btc-cli Extensions (btc-cli-only tests, no bitcoin-cli comparison)
+# ═══════════════════════════════════════════════════════════════════════
+section "Category I: btc-cli Extensions"
+
+# I1: _ placeholder — treat _ as null
+subsection "I1: _ placeholder"
+BTC_OUT=$(btc listtransactions _ 5 2>/dev/null) || true
+if echo "$BTC_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d,list)" 2>/dev/null; then
+    pass "I1.01 _ placeholder in listtransactions"
+else
+    fail "I1.01 _ placeholder" "unexpected output: ${BTC_OUT:0:100}"
+fi
+
+# I2: BTC_WALLET env var — use the default wallet which is already loaded
+subsection "I2: BTC_WALLET env var"
+# Get the default wallet name from listwallets
+DEFAULT_WALLET=$(btc listwallets 2>/dev/null | python3 -c "import sys,json; w=json.load(sys.stdin); print(w[0] if w else '')" 2>/dev/null) || true
+if [ -n "$DEFAULT_WALLET" ]; then
+    BTC_OUT1=$(BTC_WALLET="$DEFAULT_WALLET" "$BTC_CLI" $CONN_ARGS getwalletinfo 2>/dev/null) || true
+    BTC_OUT2=$(btc -rpcwallet="$DEFAULT_WALLET" getwalletinfo 2>/dev/null) || true
+    if [ "$BTC_OUT1" = "$BTC_OUT2" ]; then
+        pass "I2.01 BTC_WALLET env var matches -rpcwallet"
+    else
+        fail "I2.01 BTC_WALLET env var" "outputs differ"
+    fi
+    # Verify CLI flag overrides env var
+    BTC_OUT3=$(BTC_WALLET=nonexistent "$BTC_CLI" $CONN_ARGS -rpcwallet="$DEFAULT_WALLET" getwalletinfo 2>/dev/null) || true
+    if [ "$BTC_OUT3" = "$BTC_OUT2" ]; then
+        pass "I2.02 -rpcwallet overrides BTC_WALLET env var"
+    else
+        fail "I2.02 -rpcwallet override" "outputs differ"
+    fi
+else
+    fail "I2.01 BTC_WALLET env var" "no wallet loaded to test with"
+fi
+
+# I3: -empty flag
+subsection "I3: -empty flag"
+EMPTY_ERR=$("$BTC_CLI" $CONN_ARGS -empty ping 2>&1 >/dev/null) || true
+if echo "$EMPTY_ERR" | grep -q "(empty response)"; then
+    pass "I3.01 -empty flag produces stderr note"
+else
+    fail "I3.01 -empty flag" "no '(empty response)' in stderr: [$EMPTY_ERR]"
+fi
+
+# I4: -field extraction
+subsection "I4: -field extraction"
+FIELD_OUT=$(btc -field=blocks getblockchaininfo 2>/dev/null) || true
+COUNT_OUT=$(btc getblockcount 2>/dev/null) || true
+if [ -n "$FIELD_OUT" ] && [ "$FIELD_OUT" = "$COUNT_OUT" ]; then
+    pass "I4.01 -field=blocks matches getblockcount"
+else
+    fail "I4.01 -field=blocks" "field=[$FIELD_OUT] count=[$COUNT_OUT]"
+fi
+
+FIELD_OUT2=$(btc -field=chain getblockchaininfo 2>/dev/null) || true
+if [ "$FIELD_OUT2" = "regtest" ]; then
+    pass "I4.02 -field=chain returns regtest"
+else
+    fail "I4.02 -field=chain" "got: $FIELD_OUT2"
+fi
+
+# I5: -sats mode
+subsection "I5: -sats mode"
+# Test bare number conversion (getbalance returns a plain number)
+SATS_OUT=$(btc -sats getbalance 2>/dev/null) || true
+if echo "$SATS_OUT" | grep -qE '^-?[0-9]+$'; then
+    pass "I5.01 -sats getbalance returns integer"
+else
+    fail "I5.01 -sats mode" "got: $SATS_OUT"
+fi
+# Test JSON path conversion (getbalances returns JSON with BTC amounts)
+SATS_JSON=$(btc -sats getbalances 2>/dev/null) || true
+if echo "$SATS_JSON" | grep -qE '"[a-z_]+" *: *[0-9]+'; then
+    # Verify no decimal points in values (all converted to sats)
+    if echo "$SATS_JSON" | grep -qE '"[a-z_]+" *: *[0-9]+\.[0-9]'; then
+        fail "I5.02 -sats JSON" "still has decimals: ${SATS_JSON:0:200}"
+    else
+        pass "I5.02 -sats getbalances JSON values are integers"
+    fi
+else
+    fail "I5.02 -sats JSON" "no integer values found: ${SATS_JSON:0:200}"
+fi
+
+# I6: @file.json
+subsection "I6: @file.json syntax"
+TMPINPUTS="/tmp/parity-inputs-$$.json"
+TMPOUTPUTS="/tmp/parity-outputs-$$.json"
+echo '[]' > "$TMPINPUTS"
+echo '[{"data":"00"}]' > "$TMPOUTPUTS"
+FILE_OUT=$(btc createrawtransaction "@$TMPINPUTS" "@$TMPOUTPUTS" 2>/dev/null) || true
+REF_OUT=$(btc createrawtransaction '[]' '[{"data":"00"}]' 2>/dev/null) || true
+rm -f "$TMPINPUTS" "$TMPOUTPUTS"
+if [ -n "$FILE_OUT" ] && [ "$FILE_OUT" = "$REF_OUT" ]; then
+    pass "I6.01 @file.json matches inline args"
+else
+    fail "I6.01 @file.json" "file=[$FILE_OUT] inline=[$REF_OUT]"
+fi
+
+# I7: Typo detection
+subsection "I7: Typo detection"
+TYPO_OUT=$("$BTC_CLI" -regest 2>&1) || true
+if echo "$TYPO_OUT" | grep -qi "did you mean"; then
+    pass "I7.01 -regest suggests -regtest"
+else
+    fail "I7.01 typo detection" "no suggestion: $TYPO_OUT"
+fi
+
+TYPO_OUT2=$("$BTC_CLI" -siggnet 2>&1) || true
+if echo "$TYPO_OUT2" | grep -qi "did you mean"; then
+    pass "I7.02 -siggnet suggests -signet"
+else
+    fail "I7.02 typo detection" "no suggestion: $TYPO_OUT2"
+fi
+
+# I8: Better error messages — connection refused exit code
+subsection "I8: Better error messages"
+"$BTC_CLI" -rpcport=19999 -rpcuser=x -rpcpassword=x getblockcount >/dev/null 2>&1
+RC=$?
+if [ "$RC" = "28" ]; then
+    pass "I8.01 connection refused exit code 28"
+else
+    fail "I8.01 connection refused" "exit code=$RC (expected 28)"
+fi
+
+# I9: -format=table
+subsection "I9: -format=table"
+# Use getchaintips which always returns a non-empty array in regtest
+TABLE_OUT=$(btc -format=table getchaintips 2>/dev/null) || true
+if echo "$TABLE_OUT" | head -1 | grep -qE '(height|hash|branchlen|status)'; then
+    pass "I9.01 -format=table contains column headers"
+else
+    fail "I9.01 -format=table" "no headers: ${TABLE_OUT:0:200}"
+fi
+
+# I10: -format=csv
+subsection "I10: -format=csv"
+CSV_OUT=$(btc -format=csv getchaintips 2>/dev/null) || true
+if echo "$CSV_OUT" | head -1 | grep -q ','; then
+    pass "I10.01 -format=csv first line contains commas"
+else
+    fail "I10.01 -format=csv" "no CSV headers: ${CSV_OUT:0:200}"
+fi
+
+# I11: Mixed positional+named (auto-detect key=value)
+subsection "I11: Mixed positional+named"
+NAMED_OUT=$(btc getblockhash height=0 2>/dev/null) || true
+POS_OUT=$(btc getblockhash 0 2>/dev/null) || true
+if [ -n "$NAMED_OUT" ] && [ "$NAMED_OUT" = "$POS_OUT" ]; then
+    pass "I11.01 auto-named key=value matches positional"
+else
+    fail "I11.01 auto-named" "named=[$NAMED_OUT] positional=[$POS_OUT]"
+fi
+
+# I12: -batch mode
+subsection "I12: -batch mode"
+BATCH_OUT=$(printf "getblockcount\ngetbestblockhash\n" | btc -batch 2>/dev/null) || true
+BC=$(btc getblockcount 2>/dev/null) || true
+BH=$(btc getbestblockhash 2>/dev/null) || true
+# Batch should contain both results
+if echo "$BATCH_OUT" | grep -q "$BC" && echo "$BATCH_OUT" | grep -q "$BH"; then
+    pass "I12.01 -batch returns both results"
+else
+    fail "I12.01 -batch mode" "batch=[$BATCH_OUT] expected blockcount=[$BC] hash=[$BH]"
+fi
+
+# I13: -completions
+subsection "I13: -completions"
+COMP_OUT=$("$BTC_CLI" -completions=bash 2>/dev/null) || true
+if echo "$COMP_OUT" | grep -q "complete -F"; then
+    pass "I13.01 -completions=bash contains 'complete -F'"
+else
+    fail "I13.01 -completions=bash" "missing 'complete -F': ${COMP_OUT:0:100}"
+fi
+
+COMP_ZSH=$("$BTC_CLI" -completions=zsh 2>/dev/null) || true
+if echo "$COMP_ZSH" | grep -q "compdef"; then
+    pass "I13.02 -completions=zsh contains 'compdef'"
+else
+    fail "I13.02 -completions=zsh" "missing 'compdef'"
+fi
+
+COMP_FISH=$("$BTC_CLI" -completions=fish 2>/dev/null) || true
+if echo "$COMP_FISH" | grep -q "complete -c btc-cli"; then
+    pass "I13.03 -completions=fish contains 'complete -c btc-cli'"
+else
+    fail "I13.03 -completions=fish" "missing 'complete -c btc-cli'"
+fi
+
+# I14: -human flag with -getinfo
+subsection "I14: -human flag"
+HUMAN_OUT=$(btc -human -getinfo 2>/dev/null) || true
+# Regtest node is always fully synced, so -human should show "Synced"
+if echo "$HUMAN_OUT" | grep -q "Synced"; then
+    pass "I14.01 -human -getinfo shows Synced"
+else
+    fail "I14.01 -human flag" "expected 'Synced': ${HUMAN_OUT:0:200}"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════
 # SUMMARY

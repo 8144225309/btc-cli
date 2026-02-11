@@ -21,6 +21,9 @@
 #include "rpc.h"
 #include "json.h"
 #include "fallback.h"
+#include "format.h"
+#include "completions.h"
+#include "repl.h"
 
 #define BTC_CLI_VERSION "0.10.0"
 
@@ -50,17 +53,49 @@ static char *build_raw_params(int argc, char **argv)
 
 	for (i = 0; i < argc; i++) {
 		const char *arg = argv[i];
-		size_t arglen = strlen(arg);
+		char *file_content = NULL;
+		size_t arglen;
+
+		if (i > 0) buf[pos++] = ',';
+
+		/* _ placeholder → null */
+		if (strcmp(arg, "_") == 0) {
+			pos += snprintf(buf + pos, bufsize - pos, "null");
+			continue;
+		}
+
+		/* @file.json syntax — read arg from file */
+		if (arg[0] == '@' && arg[1] != '\0') {
+			FILE *f = fopen(arg + 1, "r");
+			if (f) {
+				long len;
+				fseek(f, 0, SEEK_END);
+				len = ftell(f);
+				fseek(f, 0, SEEK_SET);
+				if (len > 0 && len <= 10 * 1024 * 1024) {
+					file_content = malloc(len + 1);
+					if (file_content) {
+						size_t nread = fread(file_content, 1, len, f);
+						file_content[nread] = '\0';
+						while (nread > 0 && (file_content[nread-1] == '\n' ||
+						       file_content[nread-1] == '\r' ||
+						       file_content[nread-1] == ' '))
+							file_content[--nread] = '\0';
+						arg = file_content;
+					}
+				}
+				fclose(f);
+			}
+		}
+
+		arglen = strlen(arg);
 
 		while (pos + arglen + 64 > bufsize) {
 			bufsize *= 2;
 			buf = realloc(buf, bufsize);
-			if (!buf) return NULL;
+			if (!buf) { free(file_content); return NULL; }
 		}
 
-		if (i > 0) buf[pos++] = ',';
-
-		/* Type inference */
 		if (strcmp(arg, "true") == 0 || strcmp(arg, "false") == 0 ||
 		    strcmp(arg, "null") == 0) {
 			pos += snprintf(buf + pos, bufsize - pos, "%s", arg);
@@ -82,6 +117,8 @@ static char *build_raw_params(int argc, char **argv)
 			else
 				pos += snprintf(buf + pos, bufsize - pos, "\"%s\"", arg);
 		}
+
+		free(file_content);
 	}
 
 	buf[pos++] = ']';
@@ -372,7 +409,7 @@ static int handle_generate(RpcClient *rpc, int argc, char **argv, int cmd_index)
 }
 
 /* Handle -getinfo: combined node information (matches bitcoin-cli text format) */
-static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
+static int handle_getinfo(RpcClient *rpc, const char *wallet_name, int human)
 {
 	char *blockchain = NULL;
 	char *network = NULL;
@@ -392,21 +429,29 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		{
 			double vp = json_get_double(blockchain, "verificationprogress");
 			double pct = vp * 100.0;
-			printf("Verification progress: ");
-			if (vp < 0.99) {
-				int filled = (int)(vp * 21);
-				int j;
-				for (j = 0; j < 21; j++) {
-					if (j < filled)
-						printf("\xe2\x96\x88");       /* U+2588 FULL BLOCK */
-					else if (j == filled && vp > 0)
-						printf("\xe2\x96\x92");       /* U+2592 MEDIUM SHADE */
-					else
-						printf("\xe2\x96\x91");       /* U+2591 LIGHT SHADE */
+			if (human && vp >= 0.9999) {
+				printf("Verification progress: Synced\n");
+			} else {
+				printf("Verification progress: ");
+				if (vp < 0.99) {
+					int filled = (int)(vp * 21);
+					int j;
+					for (j = 0; j < 21; j++) {
+						if (j < filled)
+							printf("\xe2\x96\x88");       /* U+2588 FULL BLOCK */
+						else if (j == filled && vp > 0)
+							printf("\xe2\x96\x92");       /* U+2592 MEDIUM SHADE */
+						else
+							printf("\xe2\x96\x91");       /* U+2591 LIGHT SHADE */
+					}
+					printf(" ");
 				}
-				printf(" ");
+				if (human) {
+					printf("%.2f%%\n", pct);
+				} else {
+					printf("%.4f%%\n", pct);
+				}
 			}
-			printf("%.4f%%\n", pct);
 		}
 		printf("Difficulty: %.16g\n", json_get_double(blockchain, "difficulty"));
 	}
@@ -1053,9 +1098,16 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	/* Handle -completions (no RPC connection needed) */
+	if (cfg.completions[0]) {
+		completions_generate(cfg.completions);
+		return 0;
+	}
+
 	/* Check for special info commands that don't need a command argument */
 	int need_command = 1;
-	if (cfg.getinfo || cfg.netinfo >= 0 || cfg.addrinfo || cfg.generate) {
+	if (cfg.getinfo || cfg.netinfo >= 0 || cfg.addrinfo || cfg.generate ||
+	    cfg.batch_mode || cfg.shell_mode) {
 		need_command = 0;
 	}
 
@@ -1070,8 +1122,14 @@ int main(int argc, char **argv)
 	/* Find command in registry (if not using special flags) */
 	if (need_command) {
 		command = argv[cfg.cmd_index];
-		method = method_find(command);
-		/* Unknown methods are forwarded to the server (like bitcoin-cli) */
+		/* "shell" command activates REPL */
+		if (strcmp(command, "shell") == 0) {
+			cfg.shell_mode = 1;
+			need_command = 0;
+		} else {
+			method = method_find(command);
+			/* Unknown methods are forwarded to the server (like bitcoin-cli) */
+		}
 	}
 
 	/* Initialize RPC client */
@@ -1132,14 +1190,14 @@ int main(int argc, char **argv)
 				        cfg.host, cfg.port);
 			} else {
 				fprintf(stderr, "error: timeout on transient error: Could not connect to the server %s:%d\n\nMake sure the bitcoind server is running and that you are connecting to the correct RPC port.\nUse \"bitcoin-cli -help\" for more info.\n", cfg.host, cfg.port);
-				return 1;
+				return 28;  /* Connection refused */
 			}
 		}
 	}
 
 	/* Handle special info commands */
 	if (cfg.getinfo) {
-		ret = handle_getinfo(&rpc, cfg.wallet);
+		ret = handle_getinfo(&rpc, cfg.wallet, cfg.human);
 		rpc_disconnect(&rpc);
 		return ret;
 	}
@@ -1261,6 +1319,132 @@ int main(int argc, char **argv)
 	}
 	if (cfg.generate) {
 		ret = handle_generate(&rpc, argc, argv, cfg.cmd_index);
+		rpc_disconnect(&rpc);
+		return ret;
+	}
+
+	/* Handle -batch mode: read commands from stdin, send as batch */
+	if (cfg.batch_mode) {
+		ret = 0;
+		char line[4096];
+		/* Build batch JSON array */
+		size_t batch_size = 4096;
+		size_t batch_pos = 0;
+		char *batch = malloc(batch_size);
+		int req_id = 1;
+		if (!batch) { rpc_disconnect(&rpc); return 1; }
+		batch[batch_pos++] = '[';
+
+		while (fgets(line, sizeof(line), stdin)) {
+			/* Trim newline */
+			char *nl = strchr(line, '\n');
+			if (nl) *nl = '\0';
+			nl = strchr(line, '\r');
+			if (nl) *nl = '\0';
+			if (line[0] == '\0') continue;
+
+			/* Parse: method arg1 arg2 ... */
+			char *save_ptr = NULL;
+			char *tok = strtok_r(line, " \t", &save_ptr);
+			if (!tok) continue;
+			char method_name[256];
+			strncpy(method_name, tok, sizeof(method_name) - 1);
+			method_name[sizeof(method_name) - 1] = '\0';
+
+			/* Collect args */
+			char *args[64];
+			int nargs = 0;
+			while ((tok = strtok_r(NULL, " \t", &save_ptr)) != NULL && nargs < 64)
+				args[nargs++] = tok;
+
+			/* Build params */
+			char *params = build_raw_params(nargs, args);
+			if (!params) continue;
+
+			/* Build JSON-RPC request object */
+			size_t needed = strlen(method_name) + strlen(params) + 128;
+			while (batch_pos + needed > batch_size) {
+				batch_size *= 2;
+				batch = realloc(batch, batch_size);
+				if (!batch) { free(params); rpc_disconnect(&rpc); return 1; }
+			}
+
+			if (req_id > 1) batch[batch_pos++] = ',';
+			batch_pos += snprintf(batch + batch_pos, batch_size - batch_pos,
+				"{\"jsonrpc\":\"2.0\",\"id\":%d,\"method\":\"%s\",\"params\":%s}",
+				req_id++, method_name, params);
+			free(params);
+		}
+
+		batch[batch_pos++] = ']';
+		batch[batch_pos] = '\0';
+
+		if (req_id == 1) {
+			/* No commands read */
+			free(batch);
+			rpc_disconnect(&rpc);
+			return 0;
+		}
+
+		/* Send batch request */
+		char *response = rpc_call_batch(&rpc, batch);
+		free(batch);
+
+		if (response) {
+			/* Pretty print the batch response array */
+			const char *p = response;
+			while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+
+			if (*p == '[') {
+				/* Parse individual results from the batch response array */
+				const char *arr_end = json_find_closing(p);
+				if (arr_end) {
+					const char *obj = strchr(p + 1, '{');
+					while (obj && obj < arr_end) {
+						const char *obj_end = json_find_closing(obj);
+						if (!obj_end) break;
+
+						size_t olen = obj_end - obj + 1;
+						char *entry = malloc(olen + 1);
+						if (entry) {
+							int error_code;
+							memcpy(entry, obj, olen);
+							entry[olen] = '\0';
+							char *res = method_extract_result(entry, &error_code);
+							if (res) {
+								const char *rp = res;
+								while (*rp == ' ' || *rp == '\t' || *rp == '\n') rp++;
+								if (*rp == '{' || *rp == '[')
+									fprint_json_pretty(stdout, res, 0);
+								else
+									printf("%s\n", res);
+								free(res);
+							} else if (error_code == 0) {
+								/* null result */
+							}
+							if (error_code != 0) ret = 1;
+							free(entry);
+						}
+						obj = strchr(obj_end + 1, '{');
+					}
+				}
+			} else {
+				/* Unexpected — just print it */
+				printf("%s\n", response);
+			}
+			free(response);
+		} else {
+			fprintf(stderr, "error: Batch RPC call failed\n");
+			ret = 1;
+		}
+
+		rpc_disconnect(&rpc);
+		return ret;
+	}
+
+	/* Handle interactive REPL */
+	if (cfg.shell_mode) {
+		ret = repl_run(&rpc);
 		rpc_disconnect(&rpc);
 		return ret;
 	}
@@ -1387,10 +1571,11 @@ int main(int argc, char **argv)
 		if (!response) {
 			if (rpc.last_http_error == 401) {
 				result = strdup("error: Authorization failed: Incorrect rpcuser or rpcpassword");
+				ret = 29;
 			} else {
 				result = strdup("error: Could not connect to the server");
+				ret = 28;
 			}
-			ret = 1;
 		} else {
 			int error_code;
 			result = method_extract_result(response, &error_code);
@@ -1424,6 +1609,60 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Handle -empty flag: print note when result is null */
+	if (!result && ret == 0 && cfg.empty_flag) {
+		fprintf(stderr, "(empty response)\n");
+	}
+
+	/* Apply -field extraction */
+	if (result && cfg.field[0] && ret == 0) {
+		const char *p = result;
+		while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+		if (*p == '{' || *p == '[') {
+			char *extracted = format_extract_field(result, cfg.field);
+			if (extracted) {
+				free(result);
+				result = extracted;
+			} else {
+				fprintf(stderr, "error: field '%s' not found\n", cfg.field);
+				free(result);
+				result = NULL;
+				ret = 1;
+			}
+		}
+	}
+
+	/* Apply -sats conversion */
+	if (result && cfg.sats_mode && ret == 0) {
+		const char *rp = result;
+		while (*rp == ' ' || *rp == '\t' || *rp == '\n') rp++;
+		if (*rp == '{' || *rp == '[') {
+			/* JSON structure — use format_sats */
+			char *converted = format_sats(result);
+			if (converted) {
+				free(result);
+				result = converted;
+			}
+		} else {
+			/* Bare number — check if it's a BTC amount (8 decimal places) */
+			const char *dot = strchr(rp, '.');
+			if (dot) {
+				int decimals = 0;
+				const char *dp = dot + 1;
+				while (*dp && *dp >= '0' && *dp <= '9') { decimals++; dp++; }
+				if (decimals == 8 && (*dp == '\0' || *dp == '\n')) {
+					double btc = strtod(rp, NULL);
+					long long sats = (long long)(btc * 100000000.0 +
+					                 (btc >= 0 ? 0.5 : -0.5));
+					char satbuf[32];
+					snprintf(satbuf, sizeof(satbuf), "%lld", sats);
+					free(result);
+					result = strdup(satbuf);
+				}
+			}
+		}
+	}
+
 	/* Output result */
 	if (result) {
 		/* Check if result looks like JSON */
@@ -1432,6 +1671,19 @@ int main(int argc, char **argv)
 
 		/* Errors go to stderr, normal output to stdout */
 		FILE *dest = (ret != 0) ? stderr : stdout;
+
+		/* Apply -format=table or -format=csv for arrays */
+		if (cfg.format == 1 && *p == '[' && ret == 0) {
+			if (format_table(dest, result) == 0) {
+				free(result);
+				goto done;
+			}
+		} else if (cfg.format == 2 && *p == '[' && ret == 0) {
+			if (format_csv(dest, result) == 0) {
+				free(result);
+				goto done;
+			}
+		}
 
 		if (*p == '{' || *p == '[') {
 			/* Pretty print JSON */
@@ -1443,6 +1695,7 @@ int main(int argc, char **argv)
 		free(result);
 	}
 
+done:
 	/* Cleanup */
 	rpc_disconnect(&rpc);
 	memset(wallet_passphrase, 0, sizeof(wallet_passphrase));

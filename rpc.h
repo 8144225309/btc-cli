@@ -22,6 +22,8 @@ int rpc_auth_auto(RpcClient *client, const char *datadir);
 void rpc_set_wallet(RpcClient *client, const char *wallet);
 int rpc_connect(RpcClient *client);
 char *rpc_call(RpcClient *client, const char *method, const char *params);
+/* Batch RPC: send pre-built JSON batch array, returns response (caller frees) */
+char *rpc_call_batch(RpcClient *client, const char *batch_json);
 void rpc_disconnect(RpcClient *client);
 
 #endif

@@ -161,6 +161,38 @@ static int parse_option(Config *cfg, const char *arg)
 		cfg->color = COLOR_NEVER;
 		return 1;
 	}
+	if (strcmp(arg, "-empty") == 0) {
+		cfg->empty_flag = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-human") == 0) {
+		cfg->human = 1;
+		return 1;
+	}
+	if (strncmp(arg, "-field=", 7) == 0) {
+		strncpy(cfg->field, arg + 7, sizeof(cfg->field) - 1);
+		return 1;
+	}
+	if (strcmp(arg, "-sats") == 0) {
+		cfg->sats_mode = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-format=table") == 0) {
+		cfg->format = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-format=csv") == 0) {
+		cfg->format = 2;
+		return 1;
+	}
+	if (strcmp(arg, "-batch") == 0) {
+		cfg->batch_mode = 1;
+		return 1;
+	}
+	if (strncmp(arg, "-completions=", 13) == 0) {
+		strncpy(cfg->completions, arg + 13, sizeof(cfg->completions) - 1);
+		return 1;
+	}
 	if (strcmp(arg, "-verify") == 0) {
 		cfg->verify = 1;
 		return 1;
@@ -280,6 +312,76 @@ static int parse_option(Config *cfg, const char *arg)
 	return 0;  /* Not recognized as option */
 }
 
+/* Known flags for typo detection */
+static const char *known_flags[] = {
+	"-signet", "-testnet", "-regtest", "-mainnet", "-testnet4",
+	"-named", "-stdin", "-help", "-getinfo", "-netinfo", "-addrinfo",
+	"-generate", "-version", "-rpcwait", "-stdinrpcpass",
+	"-stdinwalletpassphrase", "-color", "-verify", "-empty", "-human",
+	"-sats", "-batch",
+	"-rpcconnect=", "-rpcport=", "-rpcuser=", "-rpcpassword=",
+	"-rpccookiefile=", "-rpcwallet=", "-datadir=", "-conf=",
+	"-rpcclienttimeout=", "-rpcwaittimeout=", "-chain=",
+	"-signetchallenge=", "-signetseednode=", "-field=",
+	"-format=", "-completions=", "-verify-peers=",
+	"-fallback-mempool-space", "-fallback-blockstream",
+	"-fallback-blockchair", "-fallback-blockchain-info",
+	"-fallback-blockcypher", "-fallback-esplora=",
+	"-fallback-p2p=", "-fallback-all", "-help=",
+	NULL
+};
+
+/* Levenshtein distance (bounded, max returns maxd+1) */
+static int levenshtein(const char *s, int slen, const char *t, int tlen, int maxd)
+{
+	int row[64];
+	int i, j;
+	if (tlen >= 64) return maxd + 1;
+	if (abs(slen - tlen) > maxd) return maxd + 1;
+
+	for (j = 0; j <= tlen; j++) row[j] = j;
+	for (i = 1; i <= slen; i++) {
+		int prev = row[0];
+		row[0] = i;
+		for (j = 1; j <= tlen; j++) {
+			int cost = (s[i-1] == t[j-1]) ? 0 : 1;
+			int val = prev + cost;
+			if (row[j] + 1 < val) val = row[j] + 1;
+			if (row[j-1] + 1 < val) val = row[j-1] + 1;
+			prev = row[j];
+			row[j] = val;
+		}
+	}
+	return row[tlen];
+}
+
+/* Find closest known flag (returns NULL if no close match) */
+static const char *find_closest_flag(const char *unknown)
+{
+	const char *best = NULL;
+	int best_dist = 4;  /* Only suggest if distance <= 3 */
+	int i;
+
+	/* Extract the flag base (before '=' if present) */
+	const char *eq = strchr(unknown, '=');
+	int unknown_len = eq ? (int)(eq - unknown) : (int)strlen(unknown);
+
+	for (i = 0; known_flags[i] != NULL; i++) {
+		const char *flag = known_flags[i];
+		int flag_len = (int)strlen(flag);
+		/* For flags with '=', compare only the prefix */
+		if (flag[flag_len - 1] == '=')
+			flag_len--;
+
+		int dist = levenshtein(unknown, unknown_len, flag, flag_len, best_dist);
+		if (dist < best_dist) {
+			best_dist = dist;
+			best = known_flags[i];
+		}
+	}
+	return best;
+}
+
 int config_parse_args(Config *cfg, int argc, char **argv)
 {
 	int i;
@@ -294,6 +396,13 @@ int config_parse_args(Config *cfg, int argc, char **argv)
 	strncpy(cfg->datadir, config_default_datadir(), sizeof(cfg->datadir) - 1);
 	cfg->cmd_index = -1;
 
+	/* BTC_WALLET env var — default -rpcwallet */
+	{
+		const char *env_wallet = getenv("BTC_WALLET");
+		if (env_wallet && env_wallet[0])
+			strncpy(cfg->wallet, env_wallet, sizeof(cfg->wallet) - 1);
+	}
+
 	/* Parse arguments */
 	for (i = 1; i < argc; i++) {
 		if (argv[i][0] == '-') {
@@ -303,7 +412,13 @@ int config_parse_args(Config *cfg, int argc, char **argv)
 				opt = opt + 1;  /* Skip first dash: --foo → -foo */
 
 			if (!parse_option(cfg, opt)) {
-				fprintf(stderr, "error: Unknown option: %s\n", argv[i]);
+				const char *suggestion = find_closest_flag(opt);
+				if (suggestion) {
+					fprintf(stderr, "error: Unknown option: %s (did you mean %s?)\n",
+					        argv[i], suggestion);
+				} else {
+					fprintf(stderr, "error: Unknown option: %s\n", argv[i]);
+				}
 				return -1;
 			}
 		} else {
@@ -488,6 +603,30 @@ void config_print_usage(const char *prog)
 	"\n"
 	"btc-cli Extensions:\n"
 	"\n"
+	"  -field=<path>\n"
+	"       Extract JSON field by dotted path (e.g., -field=blocks)\n"
+	"\n"
+	"  -format=<mode>\n"
+	"       Output format: table (aligned columns) or csv\n"
+	"\n"
+	"  -sats\n"
+	"       Display BTC amounts as satoshis\n"
+	"\n"
+	"  -empty\n"
+	"       Print \"(empty response)\" to stderr when result is null\n"
+	"\n"
+	"  -human\n"
+	"       Human-friendly -getinfo output (e.g., \"Synced\" instead of 99.99%%)\n"
+	"\n"
+	"  -batch\n"
+	"       Read commands from stdin (one per line), send as JSON-RPC batch\n"
+	"\n"
+	"  -completions=<shell>\n"
+	"       Generate shell completion script (bash, zsh, or fish)\n"
+	"\n"
+	"  shell\n"
+	"       Start interactive REPL with line editing and history\n"
+	"\n"
 	"  -verify\n"
 	"       Verify transaction propagation via P2P peers\n"
 	"\n"
@@ -520,6 +659,11 @@ void config_print_usage(const char *prog)
 	"\n"
 	"  -help=<command>\n"
 	"       Show help for a specific RPC command\n"
+	"\n"
+	"  Note: Use _ as a placeholder for null in positional parameters.\n"
+	"        Use @file.json to load an argument from a file.\n"
+	"        Set BTC_WALLET env var to default -rpcwallet.\n"
+	"        Arguments matching param_name=value auto-detect named mode.\n"
 	);
 }
 

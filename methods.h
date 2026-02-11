@@ -87,4 +87,7 @@ void method_set_verify(int enabled, int peers, Network net);
 /* Configure fallback broadcast for sendrawtransaction */
 void method_set_fallback(const FallbackConfig *cfg);
 
+/* Get array of all method names (NULL-terminated). Returns static pointer. */
+const char **method_list_names(int *count);
+
 #endif
