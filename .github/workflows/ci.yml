@@ -51,6 +51,8 @@ jobs:
           bash parity_scan.sh 2>&1 | tee /tmp/parity-output.txt
           echo ""
           echo "=== Checking results ==="
-          grep -q "FAIL: 0" /tmp/parity-output.txt || { echo "FAIL count is non-zero"; exit 1; }
-          grep -q "SKIP: 0" /tmp/parity-output.txt || { echo "SKIP count is non-zero"; exit 1; }
+          # Strip ANSI color codes before grepping
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/parity-output.txt > /tmp/parity-clean.txt
+          grep -q "FAIL: 0" /tmp/parity-clean.txt || { echo "FAIL count is non-zero"; exit 1; }
+          grep -q "SKIP: 0" /tmp/parity-clean.txt || { echo "SKIP count is non-zero"; exit 1; }
           echo "All checks passed"
