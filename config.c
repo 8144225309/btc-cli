@@ -332,55 +332,195 @@ void config_apply_network_defaults(Config *cfg)
 
 void config_print_usage(const char *prog)
 {
-	printf("Usage: %s [options] <command> [params]\n\n", prog);
-	printf("Options:\n");
-	printf("  -signet              Use signet network (port %d)\n", PORT_SIGNET);
-	printf("  -testnet             Use testnet3 (port %d)\n", PORT_TESTNET);
-	printf("  -testnet4            Use testnet4 (port %d)\n", PORT_TESTNET4);
-	printf("  -chain=<name>        Select chain (main|test|testnet4|signet|regtest)\n");
-	printf("  -regtest             Use regtest (port %d)\n", PORT_REGTEST);
-	printf("  -rpcconnect=<ip>     Connect to node at <ip> (default: 127.0.0.1)\n");
-	printf("  -rpcport=<port>      Connect to port <port>\n");
-	printf("  -rpcuser=<user>      RPC username\n");
-	printf("  -rpcpassword=<pw>    RPC password\n");
-	printf("  -rpccookiefile=<f>   Cookie file path\n");
-	printf("  -rpcwallet=<wallet>  Wallet name for wallet RPCs\n");
-	printf("  -datadir=<dir>       Bitcoin data directory\n");
-	printf("  -conf=<file>         Config file path (default: datadir/bitcoin.conf)\n");
-	printf("  -named               Use named parameters\n");
-	printf("  -stdin               Read extra args from stdin\n");
-	printf("  -rpcwait             Wait for server to start\n");
-	printf("  -rpcwaittimeout=<n>  Timeout for -rpcwait in seconds (default: 0=forever)\n");
-	printf("  -rpcclienttimeout=<n> RPC timeout in seconds (default: 900)\n");
-	printf("  -stdinrpcpass        Read RPC password from stdin (no echo)\n");
-	printf("  -stdinwalletpassphrase  Read wallet passphrase from stdin\n");
-	printf("  -signetchallenge=<hex>  Custom signet challenge script\n");
-	printf("  -signetseednode=<h:p>   Custom signet seed node\n");
-	printf("  -color=<when>        Colorize JSON output (auto, always, never)\n");
-	printf("  -getinfo             Get general info from node\n");
-	printf("  -netinfo[=<level>]   Get network peer info (level 0-4, default 0)\n");
-	printf("  -addrinfo            Get address counts by network type\n");
-	printf("  -generate [n] [max]  Generate n blocks (default: 1)\n");
-	printf("  -verify              Verify tx propagation via P2P peers\n");
-	printf("  -verify-peers=<n>    Number of peers to check (default: 3, max: 10)\n");
-	printf("  -fallback-mempool-space    Broadcast via mempool.space API (requires TLS)\n");
-	printf("  -fallback-blockstream      Broadcast via blockstream.info API (requires TLS)\n");
-	printf("  -fallback-blockchair       Broadcast via blockchair.com API (requires TLS)\n");
-	printf("  -fallback-blockchain-info  Broadcast via blockchain.info API (requires TLS)\n");
-	printf("  -fallback-blockcypher      Broadcast via blockcypher.com API (requires TLS)\n");
-	printf("  -fallback-esplora=<url>    Broadcast via Esplora API at URL (plain HTTP OK)\n");
-	printf("  -fallback-p2p=<n>        Broadcast to N peers via P2P protocol\n");
-	printf("  -fallback-all            Enable all fallback methods\n");
-	printf("  -version             Show version and exit\n");
-	printf("  -help                Show this help\n");
-	printf("  -help=<command>      Show help for specific command\n");
-	printf("\n");
-	printf("Examples:\n");
-	printf("  %s -signet getblockchaininfo\n", prog);
-	printf("  %s -signet -getinfo\n", prog);
-	printf("  %s -signet -netinfo\n", prog);
-	printf("  %s -signet -rpcwait getblockcount\n", prog);
-	printf("  %s -signet -named sendtoaddress address=tb1q... amount=0.1\n", prog);
+	(void)prog;
+	printf(
+	"Bitcoin Core RPC client version v30.2.0\n"
+	"\n"
+	"The bitcoin-cli utility provides a command line interface to interact with a Bitcoin Core RPC server.\n"
+	"\n"
+	"It can be used to query network information, manage wallets, create or broadcast transactions, and control the Bitcoin Core server.\n"
+	"\n"
+	"Use the \"help\" command to list all commands. Use \"help <command>\" to show help for that command.\n"
+	"The -named option allows you to specify parameters using the key=value format, eliminating the need to pass unused positional parameters.\n"
+	"\n"
+	"Usage: bitcoin-cli [options] <command> [params]\n"
+	"or:    bitcoin-cli [options] -named <command> [name=value]...\n"
+	"or:    bitcoin-cli [options] help\n"
+	"or:    bitcoin-cli [options] help <command>\n"
+	"\n"
+	"\n"
+	"Options:\n"
+	"\n"
+	"  -color=<when>\n"
+	"       Color setting for CLI output (default: auto). Valid values: always, auto\n"
+	"       (add color codes when standard output is connected to a terminal\n"
+	"       and OS is not WIN32), never. Only applies to the output of\n"
+	"       -getinfo.\n"
+	"\n"
+	"  -conf=<file>\n"
+	"       Specify configuration file. Relative paths will be prefixed by datadir\n"
+	"       location. (default: bitcoin.conf)\n"
+	"\n"
+	"  -datadir=<dir>\n"
+	"       Specify data directory\n"
+	"\n"
+	"  -help\n"
+	"       Print this help message and exit (also -h or -?)\n"
+	"\n"
+	"  -named\n"
+	"       Pass named instead of positional arguments (default: false)\n"
+	"\n"
+	"  -rpcclienttimeout=<n>\n"
+	"       Timeout in seconds during HTTP requests, or 0 for no timeout. (default:\n"
+	"       900)\n"
+	"\n"
+	"  -rpcconnect=<ip>\n"
+	"       Send commands to node running on <ip> (default: 127.0.0.1)\n"
+	"\n"
+	"  -rpccookiefile=<loc>\n"
+	"       Location of the auth cookie. Relative paths will be prefixed by a\n"
+	"       net-specific datadir location. (default: data dir)\n"
+	"\n"
+	"  -rpcpassword=<pw>\n"
+	"       Password for JSON-RPC connections\n"
+	"\n"
+	"  -rpcport=<port>\n"
+	"       Connect to JSON-RPC on <port> (default: 8332, testnet: 18332, testnet4:\n"
+	"       48332, signet: 38332, regtest: 18443)\n"
+	"\n"
+	"  -rpcuser=<user>\n"
+	"       Username for JSON-RPC connections\n"
+	"\n"
+	"  -rpcwait\n"
+	"       Wait for RPC server to start\n"
+	"\n"
+	"  -rpcwaittimeout=<n>\n"
+	"       Timeout in seconds to wait for the RPC server to start, or 0 for no\n"
+	"       timeout. (default: 0)\n"
+	"\n"
+	"  -rpcwallet=<walletname>\n"
+	"       Send RPC for non-default wallet on RPC server (needs to exactly match\n"
+	"       corresponding -wallet option passed to bitcoind). This changes\n"
+	"       the RPC endpoint used, e.g.\n"
+	"       http://127.0.0.1:8332/wallet/<walletname>\n"
+	"\n"
+	"  -stdin\n"
+	"       Read extra arguments from standard input, one per line until EOF/Ctrl-D\n"
+	"       (recommended for sensitive information such as passphrases). When\n"
+	"       combined with -stdinrpcpass, the first line from standard input\n"
+	"       is used for the RPC password.\n"
+	"\n"
+	"  -stdinrpcpass\n"
+	"       Read RPC password from standard input as a single line. When combined\n"
+	"       with -stdin, the first line from standard input is used for the\n"
+	"       RPC password. When combined with -stdinwalletpassphrase,\n"
+	"       -stdinrpcpass consumes the first line, and -stdinwalletpassphrase\n"
+	"       consumes the second.\n"
+	"\n"
+	"  -stdinwalletpassphrase\n"
+	"       Read wallet passphrase from standard input as a single line. When\n"
+	"       combined with -stdin, the first line from standard input is used\n"
+	"       for the wallet passphrase.\n"
+	"\n"
+	"  -version\n"
+	"       Print version and exit\n"
+	"\n"
+	"Debugging/Testing options:\n"
+	"\n"
+	"Chain selection options:\n"
+	"\n"
+	"  -chain=<chain>\n"
+	"       Use the chain <chain> (default: main). Allowed values: main, test,\n"
+	"       testnet4, signet, regtest\n"
+	"\n"
+	"  -signet\n"
+	"       Use the signet chain. Equivalent to -chain=signet. Note that the network\n"
+	"       is defined by the -signetchallenge parameter\n"
+	"\n"
+	"  -signetchallenge\n"
+	"       Blocks must satisfy the given script to be considered valid (only for\n"
+	"       signet networks; defaults to the global default signet test\n"
+	"       network challenge)\n"
+	"\n"
+	"  -signetseednode\n"
+	"       Specify a seed node for the signet network, in the hostname[:port]\n"
+	"       format, e.g. sig.net:1234 (may be used multiple times to specify\n"
+	"       multiple seed nodes; defaults to the global default signet test\n"
+	"       network seed node(s))\n"
+	"\n"
+	"  -testnet\n"
+	"       Use the testnet3 chain. Equivalent to -chain=test. Support for testnet3\n"
+	"       is deprecated and will be removed in an upcoming release.\n"
+	"       Consider moving to testnet4 now by using -testnet4.\n"
+	"\n"
+	"  -testnet4\n"
+	"       Use the testnet4 chain. Equivalent to -chain=testnet4.\n"
+	"\n"
+	"CLI Commands:\n"
+	"\n"
+	"  -addrinfo\n"
+	"       Get the number of addresses known to the node, per network and total,\n"
+	"       after filtering for quality and recency. The total number of\n"
+	"       addresses known to the node may be higher.\n"
+	"\n"
+	"  -generate\n"
+	"       Generate blocks, equivalent to RPC getnewaddress followed by RPC\n"
+	"       generatetoaddress. Optional positional integer arguments are\n"
+	"       number of blocks to generate (default: 1) and maximum iterations\n"
+	"       to try (default: 1000000), equivalent to RPC generatetoaddress\n"
+	"       nblocks and maxtries arguments. Example: bitcoin-cli -generate 4\n"
+	"       1000\n"
+	"\n"
+	"  -getinfo\n"
+	"       Get general information from the remote server. Note that unlike\n"
+	"       server-side RPC calls, the output of -getinfo is the result of\n"
+	"       multiple non-atomic requests. Some entries in the output may\n"
+	"       represent results from different states (e.g. wallet balance may\n"
+	"       be as of a different block from the chain state reported)\n"
+	"\n"
+	"  -netinfo\n"
+	"       Get network peer connection information from the remote server. An\n"
+	"       optional argument from 0 to 4 can be passed for different peers\n"
+	"       listings (default: 0). If a non-zero value is passed, an\n"
+	"       additional \"outonly\" (or \"o\") argument can be passed to see\n"
+	"       outbound peers only. Pass \"help\" (or \"h\") for detailed help\n"
+	"       documentation.\n"
+	"\n"
+	"btc-cli Extensions:\n"
+	"\n"
+	"  -verify\n"
+	"       Verify transaction propagation via P2P peers\n"
+	"\n"
+	"  -verify-peers=<n>\n"
+	"       Number of peers to check for verification (default: 3, max: 10)\n"
+	"\n"
+	"  -fallback-mempool-space\n"
+	"       Broadcast via mempool.space API\n"
+	"\n"
+	"  -fallback-blockstream\n"
+	"       Broadcast via blockstream.info API\n"
+	"\n"
+	"  -fallback-blockchair\n"
+	"       Broadcast via blockchair.com API\n"
+	"\n"
+	"  -fallback-blockchain-info\n"
+	"       Broadcast via blockchain.info API\n"
+	"\n"
+	"  -fallback-blockcypher\n"
+	"       Broadcast via blockcypher.com API\n"
+	"\n"
+	"  -fallback-esplora=<url>\n"
+	"       Broadcast via Esplora API at specified URL\n"
+	"\n"
+	"  -fallback-p2p=<n>\n"
+	"       Broadcast to N peers via P2P protocol\n"
+	"\n"
+	"  -fallback-all\n"
+	"       Enable all fallback broadcast methods\n"
+	"\n"
+	"  -help=<command>\n"
+	"       Show help for a specific RPC command\n"
+	);
 }
 
 /* Map section name to Network, returns -1 if not a network section */

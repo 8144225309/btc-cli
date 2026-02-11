@@ -200,6 +200,15 @@ static void get_cookie_path(char *path, size_t size, const char *datadir, Networ
 static void print_version(void)
 {
 	printf("Bitcoin Core RPC client version v30.2.0\n");
+	printf("Copyright (C) 2009-2026 The Bitcoin Core developers\n");
+	printf("\n");
+	printf("Please contribute if you find Bitcoin Core useful. Visit\n");
+	printf("<https://bitcoincore.org/> for further information about the software.\n");
+	printf("The source code is available from <https://github.com/bitcoin/bitcoin>.\n");
+	printf("\n");
+	printf("This is experimental software.\n");
+	printf("Distributed under the MIT software license, see the accompanying file COPYING\n");
+	printf("or <https://opensource.org/license/MIT>\n");
 }
 
 /* Read password from stdin without echo */
@@ -287,10 +296,13 @@ static int handle_addrinfo(RpcClient *rpc)
 	}
 	free(response);
 
-	printf("{\"addresses_known\":{");
-	printf("\"ipv4\":%d,\"ipv6\":%d,\"onion\":%d,\"i2p\":%d,\"cjdns\":%d,\"total\":%d",
-	       ipv4, ipv6, onion, i2p, cjdns, total);
-	printf("}}\n");
+	{
+		char buf[512];
+		snprintf(buf, sizeof(buf),
+			"{\"addresses_known\":{\"ipv4\":%d,\"ipv6\":%d,\"onion\":%d,\"i2p\":%d,\"cjdns\":%d,\"total\":%d}}",
+			ipv4, ipv6, onion, i2p, cjdns, total);
+		fprint_json_pretty(stdout, buf, 0);
+	}
 
 	return 0;
 }
@@ -380,18 +392,21 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		{
 			double vp = json_get_double(blockchain, "verificationprogress");
 			double pct = vp * 100.0;
-			int filled = (int)(vp * 21);
-			int j;
 			printf("Verification progress: ");
-			for (j = 0; j < 21; j++) {
-				if (j < filled)
-					printf("\xe2\x96\x88");       /* U+2588 FULL BLOCK */
-				else if (j == filled && vp > 0)
-					printf("\xe2\x96\x92");       /* U+2592 MEDIUM SHADE */
-				else
-					printf("\xe2\x96\x91");       /* U+2591 LIGHT SHADE */
+			if (vp < 0.99) {
+				int filled = (int)(vp * 21);
+				int j;
+				for (j = 0; j < 21; j++) {
+					if (j < filled)
+						printf("\xe2\x96\x88");       /* U+2588 FULL BLOCK */
+					else if (j == filled && vp > 0)
+						printf("\xe2\x96\x92");       /* U+2592 MEDIUM SHADE */
+					else
+						printf("\xe2\x96\x91");       /* U+2591 LIGHT SHADE */
+				}
+				printf(" ");
 			}
-			printf(" %.4f%%\n", pct);
+			printf("%.4f%%\n", pct);
 		}
 		printf("Difficulty: %.16g\n", json_get_double(blockchain, "difficulty"));
 	}
@@ -812,32 +827,32 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 		int show_cjdns = (cjdns_total > 0);
 
 		/* Header row */
-		printf("\n        ipv4    ipv6");
-		if (show_onion) printf("   onion");
-		if (show_i2p) printf("     i2p");
-		if (show_cjdns) printf("   cjdns");
-		printf("   total   block\n");
+		printf("\n     %8s%8s", "ipv4", "ipv6");
+		if (show_onion) printf("%8s", "onion");
+		if (show_i2p) printf("%8s", "i2p");
+		if (show_cjdns) printf("%8s", "cjdns");
+		printf("   %5s   %5s\n", "total", "block");
 
 		/* In row */
-		printf("in    %5d  %5d", ipv4_in, ipv6_in);
-		if (show_onion) printf("  %5d", onion_in);
-		if (show_i2p) printf("  %5d", i2p_in);
-		if (show_cjdns) printf("  %5d", cjdns_in);
-		printf("  %5d\n", inbound);
+		printf("%-5s%8d%8d", "in", ipv4_in, ipv6_in);
+		if (show_onion) printf("%8d", onion_in);
+		if (show_i2p) printf("%8d", i2p_in);
+		if (show_cjdns) printf("%8d", cjdns_in);
+		printf("   %5d\n", inbound);
 
 		/* Out row (includes block relay count) */
-		printf("out   %5d  %5d", ipv4_out, ipv6_out);
-		if (show_onion) printf("  %5d", onion_out);
-		if (show_i2p) printf("  %5d", i2p_out);
-		if (show_cjdns) printf("  %5d", cjdns_out);
-		printf("  %5d  %5d\n", outbound, block_relay_out);
+		printf("%-5s%8d%8d", "out", ipv4_out, ipv6_out);
+		if (show_onion) printf("%8d", onion_out);
+		if (show_i2p) printf("%8d", i2p_out);
+		if (show_cjdns) printf("%8d", cjdns_out);
+		printf("   %5d   %5d\n", outbound, block_relay_out);
 
 		/* Total row */
-		printf("total %5d  %5d", ipv4_total, ipv6_total);
-		if (show_onion) printf("  %5d", onion_total);
-		if (show_i2p) printf("  %5d", i2p_total);
-		if (show_cjdns) printf("  %5d", cjdns_total);
-		printf("  %5d\n", total);
+		printf("%-5s%8d%8d", "total", ipv4_total, ipv6_total);
+		if (show_onion) printf("%8d", onion_total);
+		if (show_i2p) printf("%8d", i2p_total);
+		if (show_cjdns) printf("%8d", cjdns_total);
+		printf("   %5d\n", total);
 	}
 
 	/* Local services from getnetworkinfo */

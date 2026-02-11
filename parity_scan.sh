@@ -799,32 +799,31 @@ else
     fail "B4.05 -rpcwait getblockcount" "btc=[$btc_out] ref=[$ref_out]"
 fi
 
-# -version
+# -version (full output comparison)
 btc_ver=$("$BTC_CLI" -version 2>/dev/null) || true
 ref_ver=$("$BITCOIN_CLI" -version 2>/dev/null) || true
 if [ "$btc_ver" = "$ref_ver" ]; then
     pass "B4.06 -version"
 elif [ -n "$btc_ver" ] && [ -n "$ref_ver" ]; then
-    # Compare first line only (version string)
-    btc_ver1=$(echo "$btc_ver" | head -1)
-    ref_ver1=$(echo "$ref_ver" | head -1)
-    if [ "$btc_ver1" = "$ref_ver1" ]; then
-        pass "B4.06 -version (first line matches)"
-    else
-        diff_note "B4.06 -version" "btc=[${btc_ver1:0:80}] ref=[${ref_ver1:0:80}]"
-    fi
+    fail "B4.06 -version" "output differs"
 else
     fail "B4.06 -version" "btc empty=$([ -z "$btc_ver" ] && echo y || echo n) ref empty=$([ -z "$ref_ver" ] && echo y || echo n)"
 fi
 
-# -help
+# -help (full diff excluding btc-cli Extensions section)
 btc_help=$("$BTC_CLI" -help 2>/dev/null) || true
 ref_help=$("$BITCOIN_CLI" -help 2>/dev/null) || true
 if [ -n "$btc_help" ] && [ -n "$ref_help" ]; then
-    # Both produce help — count lines as rough structural comparison
-    btc_lines=$(echo "$btc_help" | wc -l)
-    ref_lines=$(echo "$ref_help" | wc -l)
-    diff_note "B4.07 -help" "btc=${btc_lines}lines ref=${ref_lines}lines"
+    # Strip btc-cli Extensions section from btc-cli output for comparison
+    btc_shared=$(echo "$btc_help" | sed '/^btc-cli Extensions:$/,$d')
+    # Strip trailing blank line(s) for clean comparison
+    btc_shared=$(echo "$btc_shared" | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }')
+    ref_clean=$(echo "$ref_help" | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }')
+    if [ "$btc_shared" = "$ref_clean" ]; then
+        pass "B4.07 -help"
+    else
+        fail "B4.07 -help" "shared section differs from bitcoin-cli"
+    fi
 else
     fail "B4.07 -help" "missing output"
 fi
@@ -907,13 +906,17 @@ fi
 
 subsection "C3: Output Format"
 
-# Both now output human-readable text — compare structural similarity
-BTC_LABELS=$(echo "$BTC_GETINFO" | grep -c ":" || true)
-REF_LABELS=$(echo "$REF_GETINFO_PLAIN" | grep -c ":" || true)
-if [ "$BTC_LABELS" -gt 5 ] && [ "$REF_LABELS" -gt 5 ]; then
-    pass "C3.01 -getinfo format (both human-readable text, btc=${BTC_LABELS} lines ref=${REF_LABELS} lines)"
+# Byte-level comparison after stripping ANSI codes from ref
+if [ "$BTC_GETINFO" = "$REF_GETINFO_PLAIN" ]; then
+    pass "C3.01 -getinfo format (byte-identical)"
 else
-    fail "C3.01 -getinfo format" "btc=${BTC_LABELS} labeled lines, ref=${REF_LABELS} labeled lines"
+    BTC_LABELS=$(echo "$BTC_GETINFO" | grep -c ":" || true)
+    REF_LABELS=$(echo "$REF_GETINFO_PLAIN" | grep -c ":" || true)
+    if [ "$BTC_LABELS" -gt 5 ] && [ "$REF_LABELS" -gt 5 ]; then
+        pass "C3.01 -getinfo format (both human-readable text, btc=${BTC_LABELS} lines ref=${REF_LABELS} lines)"
+    else
+        fail "C3.01 -getinfo format" "btc=${BTC_LABELS} labeled lines, ref=${REF_LABELS} labeled lines"
+    fi
 fi
 
 subsection "C4: Multi-wallet"
@@ -976,21 +979,21 @@ subsection "D2-D5: Levels 1-4"
 for level in 1 2 3 4; do
     btc_out=$("$BTC_CLI" $CONN_ARGS -netinfo=$level 2>/dev/null) || true
     ref_out=$("$BITCOIN_CLI" $CONN_ARGS -netinfo=$level 2>/dev/null) || true
-    if [ -n "$btc_out" ] && [ -n "$ref_out" ]; then
-        # Compare line counts as structural similarity
+    if [ "$btc_out" = "$ref_out" ]; then
+        pass "D2.0$level -netinfo=$level (byte-identical)"
+    elif [ -n "$btc_out" ] && [ -n "$ref_out" ]; then
+        # Both produce output — content diff
         btc_lines=$(echo "$btc_out" | wc -l)
         ref_lines=$(echo "$ref_out" | wc -l)
         if [ "$btc_lines" = "$ref_lines" ]; then
             pass "D2.0$level -netinfo=$level (${btc_lines} lines)"
         else
-            diff_note "D2.0$level -netinfo=$level" "btc=${btc_lines}lines ref=${ref_lines}lines"
+            fail "D2.0$level -netinfo=$level" "btc=${btc_lines}lines ref=${ref_lines}lines"
         fi
-    elif [ -z "$btc_out" ] && [ -n "$ref_out" ]; then
-        fail "D2.0$level -netinfo=$level" "btc produced no output"
-    elif [ -n "$btc_out" ] && [ -z "$ref_out" ]; then
-        fail "D2.0$level -netinfo=$level" "ref produced no output"
-    else
+    elif [ -z "$btc_out" ] && [ -z "$ref_out" ]; then
         pass "D2.0$level -netinfo=$level (both empty — no peers)"
+    else
+        fail "D2.0$level -netinfo=$level" "btc empty=$([ -z "$btc_out" ] && echo y || echo n) ref empty=$([ -z "$ref_out" ] && echo y || echo n)"
     fi
 done
 
@@ -1420,37 +1423,10 @@ subsection "G9: -addrinfo"
 
 btc_out=$("$BTC_CLI" $CONN_ARGS -addrinfo 2>/dev/null) || true
 ref_out=$("$BITCOIN_CLI" $CONN_ARGS -addrinfo 2>/dev/null) || true
-if [ -n "$btc_out" ] && [ -n "$ref_out" ]; then
-    # Compare JSON keys
-    btc_keys=$(echo "$btc_out" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    if isinstance(d, dict):
-        def get_keys(d, prefix=''):
-            for k,v in sorted(d.items()):
-                print(prefix+k)
-                if isinstance(v, dict): get_keys(v, prefix+k+'.')
-        get_keys(d)
-except: print('NOT_JSON')
-" 2>/dev/null) || true
-    ref_keys=$(echo "$ref_out" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    if isinstance(d, dict):
-        def get_keys(d, prefix=''):
-            for k,v in sorted(d.items()):
-                print(prefix+k)
-                if isinstance(v, dict): get_keys(v, prefix+k+'.')
-        get_keys(d)
-except: print('NOT_JSON')
-" 2>/dev/null) || true
-    if [ "$btc_keys" = "$ref_keys" ]; then
-        pass "G9.01 -addrinfo keys match"
-    else
-        diff_note "G9.01 -addrinfo" "btc keys=[$btc_keys] ref keys=[$ref_keys]"
-    fi
+if [ "$btc_out" = "$ref_out" ]; then
+    pass "G9.01 -addrinfo"
+elif [ -n "$btc_out" ] && [ -n "$ref_out" ]; then
+    fail "G9.01 -addrinfo" "output differs"
 else
     fail "G9.01 -addrinfo" "btc empty=$([ -z "$btc_out" ] && echo y || echo n) ref empty=$([ -z "$ref_out" ] && echo y || echo n)"
 fi
@@ -1796,16 +1772,15 @@ fi
 
 subsection "H3: JSON formatting"
 
-# Verify compact empty containers
+# Verify compact empty containers — btc-cli uses compact "[]" (intentional)
 btc_out=$(btc getrawmempool 2>/dev/null) || true
 ref_out=$(ref getrawmempool 2>/dev/null) || true
-# With empty mempool after mining, should be "[\n]\n" or "[]"
 btc_compact=$(echo "$btc_out" | tr -d '[:space:]')
 ref_compact=$(echo "$ref_out" | tr -d '[:space:]')
 if [ "$btc_compact" = "$ref_compact" ]; then
     pass "H3.01 empty array format"
 else
-    diff_note "H3.01 empty array format" "btc=[$btc_out] ref=[$ref_out]"
+    fail "H3.01 empty array format" "btc=[$btc_out] ref=[$ref_out]"
 fi
 
 # Mine the mempool txs
