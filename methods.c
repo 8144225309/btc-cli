@@ -247,6 +247,8 @@ GENERIC_HANDLER(walletdisplayaddress)
 GENERIC_HANDLER(getorphantxs)
 GENERIC_HANDLER(getrawaddrman)
 
+GENERIC_HANDLER(echo)
+
 GENERIC_HANDLER(invalidateblock)
 GENERIC_HANDLER(reconsiderblock)
 
@@ -1160,6 +1162,20 @@ static const MethodDef methods[] = {
 	{"getrawaddrman", "network", "Get raw address manager data",
 	 cmd_getrawaddrman, {}, 0},
 
+	/* === Debug === */
+	{"echo", "control", "Simply echo back the input arguments",
+	 cmd_echo,
+	 {{"arg0", PARAM_STRING, 0, ""},
+	  {"arg1", PARAM_STRING, 0, ""},
+	  {"arg2", PARAM_STRING, 0, ""},
+	  {"arg3", PARAM_STRING, 0, ""},
+	  {"arg4", PARAM_STRING, 0, ""},
+	  {"arg5", PARAM_STRING, 0, ""},
+	  {"arg6", PARAM_STRING, 0, ""},
+	  {"arg7", PARAM_STRING, 0, ""},
+	  {"arg8", PARAM_STRING, 0, ""},
+	  {"arg9", PARAM_STRING, 0, ""}}, 10},
+
 	/* Sentinel */
 	{NULL, NULL, NULL, NULL, {}, 0}
 };
@@ -1453,9 +1469,12 @@ char *method_extract_result(const char *response, int *error_code)
 			*error_code = code;
 			char msg[2048];
 			if (json_get_string(error, "message", msg, sizeof(msg)) > 0) {
-				size_t needed = strlen(msg) + 64;
+				const char *wallet_hint = "";
+				if (code == -19)
+					wallet_hint = "\nHint: Or for the CLI, specify the \"-rpcwallet=<walletname>\" option before the command";
+				size_t needed = strlen(msg) + strlen(wallet_hint) + 64;
 				out = malloc(needed);
-				snprintf(out, needed, "error code: %d\nerror message:\n%s", code, msg);
+				snprintf(out, needed, "error code: %d\nerror message:\n%s%s", code, msg, wallet_hint);
 				return out;
 			}
 		}
@@ -1581,6 +1600,10 @@ static int cmd_generic(RpcClient *rpc, const char *method, int argc, char **argv
 	free(params);
 
 	if (!response) {
+		if (rpc->last_http_error == 401) {
+			*out = strdup("error: Authorization failed: Incorrect rpcuser or rpcpassword");
+			return 1;
+		}
 		*out = strdup("RPC call failed");
 		return 1;
 	}

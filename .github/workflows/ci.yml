@@ -1,0 +1,58 @@
+name: Build & Parity Scan
+
+on:
+  push:
+    branches: [main, 'feature/*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  parity:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bitcoin_arch: x86_64-linux-gnu
+          - os: macos-latest
+            bitcoin_arch: arm64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Bitcoin Core
+        id: cache-bitcoin
+        uses: actions/cache@v4
+        with:
+          path: ~/bitcoin-core
+          key: bitcoin-core-30.2-${{ matrix.bitcoin_arch }}
+
+      - name: Download Bitcoin Core
+        if: steps.cache-bitcoin.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/bitcoin-core
+          curl -fsSL "https://bitcoincore.org/bin/bitcoin-core-30.2/bitcoin-30.2-${{ matrix.bitcoin_arch }}.tar.gz" \
+            | tar -xz -C ~/bitcoin-core --strip-components=1
+
+      - name: Build btc-cli
+        run: make
+
+      - name: Smoke test
+        run: |
+          ./btc-cli -version | head -1
+          ./btc-cli -help | wc -l
+
+      - name: Run parity scan
+        run: |
+          export BTC_CLI="$PWD/btc-cli"
+          export BITCOIN_CLI="$HOME/bitcoin-core/bin/bitcoin-cli"
+          export BITCOIND="$HOME/bitcoin-core/bin/bitcoind"
+          bash parity_scan.sh 2>&1 | tee /tmp/parity-output.txt
+          echo ""
+          echo "=== Checking results ==="
+          # Strip ANSI color codes before grepping
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/parity-output.txt > /tmp/parity-clean.txt
+          grep -q "FAIL: 0" /tmp/parity-clean.txt || { echo "FAIL count is non-zero"; exit 1; }
+          grep -q "SKIP: 0" /tmp/parity-clean.txt || { echo "SKIP count is non-zero"; exit 1; }
+          echo "All checks passed"
