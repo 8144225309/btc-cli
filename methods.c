@@ -1246,6 +1246,53 @@ void method_print_help(const MethodDef *method)
 	}
 }
 
+/* Get array of all method names */
+const char **method_list_names(int *count)
+{
+	static const char *names[512];
+	int n = 0;
+	const MethodDef *m;
+	for (m = methods; m->name != NULL && n < 511; m++)
+		names[n++] = m->name;
+	names[n] = NULL;
+	if (count) *count = n;
+	return names;
+}
+
+/* Read file contents for @file.json syntax (returns malloc'd string, caller frees) */
+static char *read_file_arg(const char *path)
+{
+	FILE *f;
+	long len;
+	char *buf;
+	size_t nread;
+
+	f = fopen(path, "r");
+	if (!f) {
+		fprintf(stderr, "error: Could not read file: %s\n", path);
+		return NULL;
+	}
+	fseek(f, 0, SEEK_END);
+	len = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (len <= 0 || len > 10 * 1024 * 1024) {  /* 10MB limit */
+		fclose(f);
+		return NULL;
+	}
+	buf = malloc(len + 1);
+	if (!buf) { fclose(f); return NULL; }
+	nread = fread(buf, 1, len, f);
+	fclose(f);
+	buf[nread] = '\0';
+
+	/* Trim trailing whitespace/newlines */
+	while (nread > 0 && (buf[nread-1] == '\n' || buf[nread-1] == '\r' ||
+	       buf[nread-1] == ' ' || buf[nread-1] == '\t'))
+		buf[--nread] = '\0';
+
+	return buf;
+}
+
 /* Check if string looks like a number */
 static int is_number(const char *s)
 {
@@ -1280,17 +1327,33 @@ char *method_build_params(const MethodDef *method, int argc, char **argv)
 	for (i = 0; i < argc && i < method->param_count; i++) {
 		const ParamDef *p = &method->params[i];
 		const char *arg = argv[i];
-		size_t arglen = strlen(arg);
+		char *file_content = NULL;
+		size_t arglen;
+
+		if (i > 0) buf[pos++] = ',';
+
+		/* _ placeholder → null */
+		if (strcmp(arg, "_") == 0) {
+			pos += snprintf(buf + pos, bufsize - pos, "null");
+			continue;
+		}
+
+		/* @file.json syntax — read arg from file */
+		if (arg[0] == '@' && arg[1] != '\0') {
+			file_content = read_file_arg(arg + 1);
+			if (file_content)
+				arg = file_content;
+		}
+
+		arglen = strlen(arg);
 
 		/* Ensure buffer has enough space: arg + quotes + comma + some margin */
 		while (pos + arglen + 64 > bufsize) {
 			bufsize *= 2;
 			char *newbuf = realloc(buf, bufsize);
-			if (!newbuf) { free(buf); return NULL; }
+			if (!newbuf) { free(buf); free(file_content); return NULL; }
 			buf = newbuf;
 		}
-
-		if (i > 0) buf[pos++] = ',';
 
 		/* Format based on type */
 		switch (p->type) {
@@ -1328,6 +1391,8 @@ char *method_build_params(const MethodDef *method, int argc, char **argv)
 			pos += snprintf(buf + pos, bufsize - pos, "\"%s\"", arg);
 			break;
 		}
+
+		free(file_content);
 	}
 
 	buf[pos++] = ']';
@@ -1571,6 +1636,26 @@ char *method_extract_result(const char *response, int *error_code)
 	return strdup(response);
 }
 
+/* Check if args contain key=value matching known param names (auto-named detection) */
+static int has_named_args(const MethodDef *m, int argc, char **argv)
+{
+	int i, j;
+	for (i = 0; i < argc; i++) {
+		const char *eq = strchr(argv[i], '=');
+		if (!eq || eq == argv[i]) continue;
+		/* Don't trigger on @file.json or JSON args */
+		if (argv[i][0] == '@' || argv[i][0] == '{' || argv[i][0] == '[')
+			continue;
+		size_t keylen = eq - argv[i];
+		for (j = 0; j < m->param_count; j++) {
+			if (strlen(m->params[j].name) == keylen &&
+			    strncmp(m->params[j].name, argv[i], keylen) == 0)
+				return 1;
+		}
+	}
+	return 0;
+}
+
 /* Generic command handler - builds params and calls RPC */
 static int cmd_generic(RpcClient *rpc, const char *method, int argc, char **argv, char **out)
 {
@@ -1584,8 +1669,8 @@ static int cmd_generic(RpcClient *rpc, const char *method, int argc, char **argv
 		return 1;
 	}
 
-	/* Build params - use named mode if enabled */
-	if (g_named_mode)
+	/* Build params - use named mode if enabled, or auto-detect key=value */
+	if (g_named_mode || has_named_args(m, argc, argv))
 		params = method_build_named_params(m, argc, argv);
 	else
 		params = method_build_params(m, argc, argv);
@@ -1602,10 +1687,10 @@ static int cmd_generic(RpcClient *rpc, const char *method, int argc, char **argv
 	if (!response) {
 		if (rpc->last_http_error == 401) {
 			*out = strdup("error: Authorization failed: Incorrect rpcuser or rpcpassword");
-			return 1;
+			return 29;
 		}
-		*out = strdup("RPC call failed");
-		return 1;
+		*out = strdup("error: Could not connect to the server");
+		return 28;
 	}
 
 	/* Extract result */

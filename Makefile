@@ -6,9 +6,9 @@ CFLAGS = -Wall -Wextra -O2 -g
 LDFLAGS =
 
 # Source files
-SRCS = btc-cli.c config.c methods.c rpc.c json.c sendtx.c p2p.c verify.c fallback.c
+SRCS = btc-cli.c config.c methods.c rpc.c json.c sendtx.c p2p.c verify.c fallback.c format.c completions.c repl.c
 OBJS = $(SRCS:.c=.o)
-HEADERS = config.h methods.h rpc.h json.h sendtx.h p2p.h verify.h fallback.h
+HEADERS = config.h methods.h rpc.h json.h sendtx.h p2p.h verify.h fallback.h format.h completions.h repl.h
 
 # Output binary
 TARGET = btc-cli

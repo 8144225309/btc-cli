@@ -74,6 +74,14 @@ typedef struct {
 	int stdinwalletpassphrase;  /* Read wallet passphrase from stdin */
 	char signetchallenge[1024]; /* Custom signet challenge script hex */
 	char signetseednode[256];   /* Custom signet seed node host:port */
+	int empty_flag;    /* -empty: print note when result is null */
+	int human;         /* -human: human-friendly -getinfo output */
+	char field[256];   /* -field=path: extract JSON field by dotted path */
+	int sats_mode;     /* -sats: display BTC amounts as satoshis */
+	int format;        /* 0=default, 1=table, 2=csv */
+	int batch_mode;    /* -batch: read commands from stdin */
+	char completions[16]; /* -completions=bash|zsh|fish */
+	int shell_mode;    /* shell: interactive REPL */
 	int verify;        /* -verify: P2P tx propagation check */
 	int verify_peers;  /* -verify-peers=N: peers to check (default 3) */
 	FallbackConfig fallback;  /* Fallback broadcast settings */

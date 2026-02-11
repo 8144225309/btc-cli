@@ -418,6 +418,60 @@ read_response:
 	}
 }
 
+char *rpc_call_batch(RpcClient *client, const char *batch_json)
+{
+	char path[512];
+	char *heap_req;
+	int body_len, heap_req_len;
+	ssize_t sent;
+
+	client->last_http_error = 0;
+
+	if (client->sock < 0) {
+		if (rpc_connect(client) < 0)
+			return NULL;
+	}
+
+	if (client->wallet[0])
+		snprintf(path, sizeof(path), "/wallet/%s", client->wallet);
+	else
+		path[0] = '/', path[1] = '\0';
+
+	body_len = (int)strlen(batch_json);
+	heap_req = malloc(body_len + 512);
+	if (!heap_req) return NULL;
+
+	heap_req_len = snprintf(heap_req, body_len + 512,
+		"POST %s HTTP/1.1\r\n"
+		"Host: %s:%d\r\n"
+		"Authorization: %s\r\n"
+		"Content-Type: application/json\r\n"
+		"Content-Length: %d\r\n"
+		"Connection: keep-alive\r\n"
+		"\r\n"
+		"%s",
+		path, client->host, client->port, client->auth,
+		body_len, batch_json);
+
+	sent = send(client->sock, heap_req, heap_req_len, 0);
+	if (sent < 0) {
+		close(client->sock);
+		client->sock = -1;
+		if (rpc_connect(client) < 0) { free(heap_req); return NULL; }
+		sent = send(client->sock, heap_req, heap_req_len, 0);
+		if (sent < 0) { free(heap_req); return NULL; }
+	}
+	free(heap_req);
+
+	{
+		int http_status = 0;
+		char *result = read_http_response(client->sock, &http_status);
+		if (http_status >= 400)
+			client->last_http_error = http_status;
+		return result;
+	}
+}
+
 void rpc_disconnect(RpcClient *client)
 {
 	if (client->sock >= 0) {
