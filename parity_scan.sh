@@ -6,9 +6,9 @@
 set -uo pipefail
 
 # ─── Paths ────────────────────────────────────────────────────────────
-BTC_CLI="/mnt/c/pirqjobs/c-bitcoin-cli/btc-cli"
-BITCOIN_CLI="/home/obscurity/bitcoin-30.2/bin/bitcoin-cli"
-BITCOIND="/home/obscurity/bitcoin-30.2/bin/bitcoind"
+BTC_CLI="${BTC_CLI:-/mnt/c/pirqjobs/c-bitcoin-cli/btc-cli}"
+BITCOIN_CLI="${BITCOIN_CLI:-/home/obscurity/bitcoin-30.2/bin/bitcoin-cli}"
+BITCOIND="${BITCOIND:-/home/obscurity/bitcoin-30.2/bin/bitcoind}"
 DATADIR="/tmp/parity-scan-$$"
 PORT=19555
 RPCPORT=$PORT
