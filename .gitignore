@@ -8,3 +8,14 @@ btc-cli
 
 # Claude settings (local)
 .claude/
+
+# Scratch/test scripts (keep parity_scan.sh tracked)
+bench*.sh
+build*.sh
+verify*.sh
+deep*.sh
+dp.sh
+gap_tests.sh
+run_regtest_tests.sh
+build_output.txt
+nul
