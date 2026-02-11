@@ -223,7 +223,26 @@ static int parse_option(Config *cfg, const char *arg)
 
 	/* Key=value options */
 	if (strncmp(arg, "-rpcconnect=", 12) == 0) {
-		strncpy(cfg->host, arg + 12, sizeof(cfg->host) - 1);
+		const char *val = arg + 12;
+		const char *colon = strrchr(val, ':');
+		if (colon && colon != val) {
+			/* Always extract host before the colon */
+			size_t hostlen = colon - val;
+			if (hostlen >= sizeof(cfg->host))
+				hostlen = sizeof(cfg->host) - 1;
+			memcpy(cfg->host, val, hostlen);
+			cfg->host[hostlen] = '\0';
+			/* Parse port if digits present and valid */
+			if (*(colon + 1)) {
+				int port = atoi(colon + 1);
+				if (port > 0 && port <= 65535 && !cfg->port_set) {
+					cfg->port = port;
+					cfg->port_set = 1;
+				}
+			}
+		} else {
+			strncpy(cfg->host, val, sizeof(cfg->host) - 1);
+		}
 		return 1;
 	}
 	if (strncmp(arg, "-rpcport=", 9) == 0) {
