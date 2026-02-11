@@ -1,2 +1,2 @@
-# Force LF line endings for shell scripts (prevents CRLF issues on Windows)
-*.sh text eol=lf
+# Force LF line endings for all source files (prevents CRLF issues on Windows)
+* text=auto eol=lf
