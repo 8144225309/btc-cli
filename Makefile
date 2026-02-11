@@ -16,9 +16,10 @@ TARGET = btc-cli
 # Default target
 all: $(TARGET)
 
-# Link
+# Link and strip (debug info in .o files for gdb)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+	strip $@
 
 # Compile
 %.o: %.c $(HEADERS)

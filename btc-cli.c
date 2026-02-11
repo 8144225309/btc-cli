@@ -505,19 +505,16 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 						memcpy(wname, start, namelen);
 						wname[namelen] = '\0';
 
-						/* Set wallet and get balance */
+						/* Set wallet and get balance (reuses connection) */
 						rpc_set_wallet(rpc, wname);
-						rpc_disconnect(rpc);
-						if (rpc_connect(rpc) == 0) {
-							char *wb = rpc_call(rpc, "getbalances", "[]");
-							if (wb) {
-								const char *mine = json_find_object(wb, "mine");
-								double bal = mine ? json_get_double(mine, "trusted") : 0;
-								if (!first) printf(",\n");
-								printf("    \"%s\": %.8f", wname, bal);
-								first = 0;
-								free(wb);
-							}
+						char *wb = rpc_call(rpc, "getbalances", "[]");
+						if (wb) {
+							const char *mine = json_find_object(wb, "mine");
+							double bal = mine ? json_get_double(mine, "trusted") : 0;
+							if (!first) printf(",\n");
+							printf("    \"%s\": %.8f", wname, bal);
+							first = 0;
+							free(wb);
 						}
 					}
 					p = end + 1;
