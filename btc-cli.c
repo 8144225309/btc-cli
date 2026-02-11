@@ -377,9 +377,23 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		printf("Chain: %s\n", buf);
 		printf("Blocks: %d\n", (int)json_get_int(blockchain, "blocks"));
 		printf("Headers: %d\n", (int)json_get_int(blockchain, "headers"));
-		printf("Verification progress: %.4f%%\n",
-		       json_get_double(blockchain, "verificationprogress") * 100.0);
-		printf("Difficulty: %.15g\n", json_get_double(blockchain, "difficulty"));
+		{
+			double vp = json_get_double(blockchain, "verificationprogress");
+			double pct = vp * 100.0;
+			int filled = (int)(vp * 21);
+			int j;
+			printf("Verification progress: ");
+			for (j = 0; j < 21; j++) {
+				if (j < filled)
+					printf("\xe2\x96\x88");       /* U+2588 FULL BLOCK */
+				else if (j == filled && vp > 0)
+					printf("\xe2\x96\x92");       /* U+2592 MEDIUM SHADE */
+				else
+					printf("\xe2\x96\x91");       /* U+2591 LIGHT SHADE */
+			}
+			printf(" %.4f%%\n", pct);
+		}
+		printf("Difficulty: %.16g\n", json_get_double(blockchain, "difficulty"));
 	}
 
 	/* Network info */
@@ -696,9 +710,21 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 				free(bc);
 			}
 		}
-		printf("btc-cli client v%s %s - server %d/%s/\n",
-		       BTC_CLI_VERSION, chain[0] ? chain : "main",
-		       protover, subver[0] ? subver : "unknown");
+		/* Strip leading/trailing slashes from subver for display */
+		{
+			char subver_clean[256];
+			const char *sv = subver;
+			size_t svlen;
+			while (*sv == '/') sv++;
+			strncpy(subver_clean, sv, sizeof(subver_clean) - 1);
+			subver_clean[sizeof(subver_clean) - 1] = '\0';
+			svlen = strlen(subver_clean);
+			while (svlen > 0 && subver_clean[svlen - 1] == '/')
+				subver_clean[--svlen] = '\0';
+			printf("Bitcoin Core client v30.2.0 %s - server %d/%s/\n",
+			       chain[0] ? chain : "main",
+			       protover, subver_clean[0] ? subver_clean : "unknown");
+		}
 	}
 
 	/* Level 1-4: print peer table (only when peers exist) */
@@ -820,24 +846,35 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 		if (nr && *nr == '{') {
 			const char *services = json_find_array(nr, "localservicesnames");
 			if (services) {
-				printf("\nLocal services:");
-				/* Parse array of strings */
-				const char *sp = services;
-				int first = 1;
-				while (*sp) {
-					const char *q = strchr(sp, '"');
-					if (!q) break;
-					q++;
-					const char *qe = strchr(q, '"');
-					if (!qe) break;
-					size_t slen = qe - q;
-					if (slen > 0) {
-						printf("%s %.*s", first ? "" : ",", (int)slen, q);
-						first = 0;
+				const char *arr_end = json_find_closing(services);
+				if (arr_end) {
+					printf("\nLocal services:");
+					/* Parse array of strings, bounded by ] */
+					const char *sp = services;
+					int first = 1;
+					while (sp < arr_end) {
+						const char *q = strchr(sp, '"');
+						if (!q || q >= arr_end) break;
+						q++;
+						const char *qe = strchr(q, '"');
+						if (!qe || qe >= arr_end) break;
+						size_t slen = qe - q;
+						if (slen > 0) {
+							/* Print lowercase, underscores as spaces */
+							size_t si;
+							printf("%s ", first ? "" : ",");
+							for (si = 0; si < slen; si++) {
+								char ch = q[si];
+								if (ch == '_') ch = ' ';
+								else if (ch >= 'A' && ch <= 'Z') ch = ch + 32;
+								putchar(ch);
+							}
+							first = 0;
+						}
+						sp = qe + 1;
 					}
-					sp = qe + 1;
+					printf("\n");
 				}
-				printf("\n");
 			}
 		}
 	}
