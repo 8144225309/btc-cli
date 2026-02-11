@@ -1887,19 +1887,27 @@ else
     fail "I1.01 _ placeholder" "unexpected output: ${BTC_OUT:0:100}"
 fi
 
-# I2: BTC_WALLET env var
+# I2: BTC_WALLET env var — use the default wallet which is already loaded
 subsection "I2: BTC_WALLET env var"
-BTC_OUT1=$(BTC_WALLET=test_wallet "$BTC_CLI" $CONN_ARGS getwalletinfo 2>&1) || true
-BTC_OUT2=$(btc -rpcwallet=test_wallet getwalletinfo 2>&1) || true
-if [ "$BTC_OUT1" = "$BTC_OUT2" ]; then
-    pass "I2.01 BTC_WALLET env var matches -rpcwallet"
-else
-    # Both may error if wallet doesn't exist — that's fine if errors match
-    if echo "$BTC_OUT1" | grep -q "error" && echo "$BTC_OUT2" | grep -q "error"; then
-        pass "I2.01 BTC_WALLET env var matches -rpcwallet (both error)"
+# Get the default wallet name from listwallets
+DEFAULT_WALLET=$(btc listwallets 2>/dev/null | python3 -c "import sys,json; w=json.load(sys.stdin); print(w[0] if w else '')" 2>/dev/null) || true
+if [ -n "$DEFAULT_WALLET" ]; then
+    BTC_OUT1=$(BTC_WALLET="$DEFAULT_WALLET" "$BTC_CLI" $CONN_ARGS getwalletinfo 2>/dev/null) || true
+    BTC_OUT2=$(btc -rpcwallet="$DEFAULT_WALLET" getwalletinfo 2>/dev/null) || true
+    if [ "$BTC_OUT1" = "$BTC_OUT2" ]; then
+        pass "I2.01 BTC_WALLET env var matches -rpcwallet"
     else
         fail "I2.01 BTC_WALLET env var" "outputs differ"
     fi
+    # Verify CLI flag overrides env var
+    BTC_OUT3=$(BTC_WALLET=nonexistent "$BTC_CLI" $CONN_ARGS -rpcwallet="$DEFAULT_WALLET" getwalletinfo 2>/dev/null) || true
+    if [ "$BTC_OUT3" = "$BTC_OUT2" ]; then
+        pass "I2.02 -rpcwallet overrides BTC_WALLET env var"
+    else
+        fail "I2.02 -rpcwallet override" "outputs differ"
+    fi
+else
+    fail "I2.01 BTC_WALLET env var" "no wallet loaded to test with"
 fi
 
 # I3: -empty flag
@@ -1930,17 +1938,24 @@ fi
 
 # I5: -sats mode
 subsection "I5: -sats mode"
+# Test bare number conversion (getbalance returns a plain number)
 SATS_OUT=$(btc -sats getbalance 2>/dev/null) || true
-# In regtest with coins, this should be an integer (no decimal point)
 if echo "$SATS_OUT" | grep -qE '^-?[0-9]+$'; then
     pass "I5.01 -sats getbalance returns integer"
 else
-    # Even "0" is fine
-    if [ "$SATS_OUT" = "0" ]; then
-        pass "I5.01 -sats getbalance returns integer (zero)"
+    fail "I5.01 -sats mode" "got: $SATS_OUT"
+fi
+# Test JSON path conversion (getbalances returns JSON with BTC amounts)
+SATS_JSON=$(btc -sats getbalances 2>/dev/null) || true
+if echo "$SATS_JSON" | grep -qE '"[a-z_]+" *: *[0-9]+'; then
+    # Verify no decimal points in values (all converted to sats)
+    if echo "$SATS_JSON" | grep -qE '"[a-z_]+" *: *[0-9]+\.[0-9]'; then
+        fail "I5.02 -sats JSON" "still has decimals: ${SATS_JSON:0:200}"
     else
-        fail "I5.01 -sats mode" "got: $SATS_OUT"
+        pass "I5.02 -sats getbalances JSON values are integers"
     fi
+else
+    fail "I5.02 -sats JSON" "no integer values found: ${SATS_JSON:0:200}"
 fi
 
 # I6: @file.json
@@ -1986,22 +2001,12 @@ fi
 
 # I9: -format=table
 subsection "I9: -format=table"
-TABLE_OUT=$(btc -format=table listunspent 2>/dev/null) || true
-if echo "$TABLE_OUT" | head -1 | grep -qE '(txid|amount|vout)'; then
+# Use getchaintips which always returns a non-empty array in regtest
+TABLE_OUT=$(btc -format=table getchaintips 2>/dev/null) || true
+if echo "$TABLE_OUT" | head -1 | grep -qE '(height|hash|branchlen|status)'; then
     pass "I9.01 -format=table contains column headers"
 else
-    # Empty listunspent is also acceptable (no UTXOs)
-    if [ -z "$TABLE_OUT" ]; then
-        # listunspent may be empty, try getchaintips which always returns data
-        TABLE_OUT2=$(btc -format=table getchaintips 2>/dev/null) || true
-        if echo "$TABLE_OUT2" | head -1 | grep -qE '(height|hash|branchlen|status)'; then
-            pass "I9.01 -format=table contains column headers (getchaintips)"
-        else
-            fail "I9.01 -format=table" "no headers: ${TABLE_OUT2:0:200}"
-        fi
-    else
-        fail "I9.01 -format=table" "no headers: ${TABLE_OUT:0:200}"
-    fi
+    fail "I9.01 -format=table" "no headers: ${TABLE_OUT:0:200}"
 fi
 
 # I10: -format=csv
@@ -2061,10 +2066,11 @@ fi
 # I14: -human flag with -getinfo
 subsection "I14: -human flag"
 HUMAN_OUT=$(btc -human -getinfo 2>/dev/null) || true
-if echo "$HUMAN_OUT" | grep -q "Synced\|Verification progress"; then
-    pass "I14.01 -human -getinfo shows verification info"
+# Regtest node is always fully synced, so -human should show "Synced"
+if echo "$HUMAN_OUT" | grep -q "Synced"; then
+    pass "I14.01 -human -getinfo shows Synced"
 else
-    fail "I14.01 -human flag" "no verification info: ${HUMAN_OUT:0:200}"
+    fail "I14.01 -human flag" "expected 'Synced': ${HUMAN_OUT:0:200}"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
