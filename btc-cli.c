@@ -199,8 +199,7 @@ static void get_cookie_path(char *path, size_t size, const char *datadir, Networ
 /* Print version and exit */
 static void print_version(void)
 {
-	printf("btc-cli version %s\n", BTC_CLI_VERSION);
-	printf("Pure C Bitcoin CLI - no external dependencies\n");
+	printf("Bitcoin Core RPC client version v30.2.0\n");
 }
 
 /* Read password from stdin without echo */
@@ -360,12 +359,11 @@ static int handle_generate(RpcClient *rpc, int argc, char **argv, int cmd_index)
 	return error_code != 0 ? 1 : 0;
 }
 
-/* Handle -getinfo: combined node information (full dashboard) */
+/* Handle -getinfo: combined node information (matches bitcoin-cli text format) */
 static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 {
 	char *blockchain = NULL;
 	char *network = NULL;
-	char *walletinfo = NULL;
 	char *walletlist = NULL;
 	char buf[256];
 
@@ -373,40 +371,28 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 	blockchain = rpc_call(rpc, "getblockchaininfo", "[]");
 	network = rpc_call(rpc, "getnetworkinfo", "[]");
 
-	printf("{\n");
-
-	/* Version from getnetworkinfo (display first, like bitcoin-cli) */
-	if (network) {
-		int version = (int)json_get_int(network, "version");
-		char subversion[256] = {0};
-		json_get_string(network, "subversion", subversion, sizeof(subversion));
-		printf("  \"version\": %d,\n", version);
-		if (subversion[0])
-			printf("  \"subversion\": \"%s\",\n", subversion);
-	}
-
 	/* Chain info */
 	if (blockchain) {
 		json_get_string(blockchain, "chain", buf, sizeof(buf));
-		printf("  \"chain\": \"%s\",\n", buf);
-		printf("  \"blocks\": %d,\n", (int)json_get_int(blockchain, "blocks"));
-		printf("  \"headers\": %d,\n", (int)json_get_int(blockchain, "headers"));
-		printf("  \"verificationprogress\": %.10g,\n",
-		       json_get_double(blockchain, "verificationprogress"));
-		printf("  \"difficulty\": %.10g,\n", json_get_double(blockchain, "difficulty"));
+		printf("Chain: %s\n", buf);
+		printf("Blocks: %d\n", (int)json_get_int(blockchain, "blocks"));
+		printf("Headers: %d\n", (int)json_get_int(blockchain, "headers"));
+		printf("Verification progress: %.4f%%\n",
+		       json_get_double(blockchain, "verificationprogress") * 100.0);
+		printf("Difficulty: %.15g\n", json_get_double(blockchain, "difficulty"));
 	}
 
 	/* Network info */
 	if (network) {
-		printf("  \"timeoffset\": %d,\n", (int)json_get_int(network, "timeoffset"));
-
 		int conn_in = (int)json_get_int(network, "connections_in");
 		int conn_out = (int)json_get_int(network, "connections_out");
 		int conn_total = (int)json_get_int(network, "connections");
-		printf("  \"connections\": {\"in\": %d, \"out\": %d, \"total\": %d},\n",
-		       conn_in, conn_out, conn_total);
+		printf("\nNetwork: in %d, out %d, total %d\n", conn_in, conn_out, conn_total);
+		printf("Version: %d\n", (int)json_get_int(network, "version"));
+		printf("Time offset (s): %d\n", (int)json_get_int(network, "timeoffset"));
 
 		/* Proxy */
+		char proxy[256] = {0};
 		const char *networks_arr = json_find_array(network, "networks");
 		if (networks_arr) {
 			const char *first_net = strchr(networks_arr, '{');
@@ -416,30 +402,26 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 					size_t nlen = first_end - first_net + 1;
 					char *net_obj = malloc(nlen + 1);
 					if (net_obj) {
-						char proxy[256] = {0};
 						memcpy(net_obj, first_net, nlen);
 						net_obj[nlen] = '\0';
 						json_get_string(net_obj, "proxy", proxy, sizeof(proxy));
-						printf("  \"proxy\": \"%s\",\n", proxy);
 						free(net_obj);
 					}
 				}
 			}
 		}
-
-		printf("  \"relayfee\": %.8f,\n", json_get_double(network, "relayfee"));
+		printf("Proxies: %s\n", proxy[0] ? proxy : "n/a");
+		printf("Min tx relay fee rate (BTC/kvB): %.8f\n",
+		       json_get_double(network, "relayfee"));
 	}
 
-	/* Detect wallet situation before printing warnings (need to know if comma follows) */
-	int multi_wallet = 0;
+	/* Detect wallet situation */
 	int no_wallet = 0;
 	int wallet_count = 0;
 	walletlist = rpc_call(rpc, "listwallets", "[]");
 	if (walletlist) {
-		/* Find the result array: locate the [ ... ] within "result" */
 		const char *arr_start = json_find_value(walletlist, "result");
 		if (!arr_start) arr_start = walletlist;
-		/* Skip to the opening [ */
 		while (*arr_start && *arr_start != '[') arr_start++;
 
 		if (*arr_start == '[') {
@@ -464,100 +446,70 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name)
 		}
 	}
 
-	/* Print warnings line — no trailing comma if no wallet section follows */
-	if (network) {
-		char warnings[1024] = {0};
-		json_get_string(network, "warnings", warnings, sizeof(warnings));
-		if (no_wallet)
-			printf("  \"warnings\": \"%s\"\n", warnings);
-		else
-			printf("  \"warnings\": \"%s\",\n", warnings);
-	}
+	/* Multi-wallet: show balances list */
+	if (wallet_count > 1 && !wallet_name[0]) {
+		printf("\nBalances\n");
 
-	/* Wallet info — multi-wallet support */
-	if (walletlist && !no_wallet) {
 		const char *arr_start = json_find_value(walletlist, "result");
 		if (!arr_start) arr_start = walletlist;
 		while (*arr_start && *arr_start != '[') arr_start++;
+		const char *arr_end = json_find_closing(arr_start);
+		if (!arr_end) arr_end = arr_start;
 
-		if (*arr_start == '[') {
-			const char *arr_end = json_find_closing(arr_start);
-			if (!arr_end) arr_end = arr_start;
+		const char *p = arr_start + 1;
+		while (p < arr_end) {
+			const char *start = strchr(p, '"');
+			if (!start || start >= arr_end) break;
+			start++;
+			const char *end = strchr(start, '"');
+			if (!end || end >= arr_end) break;
 
-			if (wallet_count > 1 && !wallet_name[0]) {
-				/* Multiple wallets, no -rpcwallet specified: show all balances */
-				printf("  \"balances\": {\n");
-				multi_wallet = 1;
+			size_t namelen = end - start;
+			char wname[256] = {0};
+			if (namelen < sizeof(wname)) {
+				memcpy(wname, start, namelen);
+				wname[namelen] = '\0';
 
-				/* Parse wallet names within array bounds only */
-				const char *p = arr_start + 1;
-				int first = 1;
-				while (p < arr_end) {
-					const char *start = strchr(p, '"');
-					if (!start || start >= arr_end) break;
-					start++;
-					const char *end = strchr(start, '"');
-					if (!end || end >= arr_end) break;
-
-					size_t namelen = end - start;
-					char wname[256] = {0};
-					if (namelen < sizeof(wname)) {
-						memcpy(wname, start, namelen);
-						wname[namelen] = '\0';
-
-						/* Set wallet and get balance (reuses connection) */
-						rpc_set_wallet(rpc, wname);
-						char *wb = rpc_call(rpc, "getbalances", "[]");
-						if (wb) {
-							const char *mine = json_find_object(wb, "mine");
-							double bal = mine ? json_get_double(mine, "trusted") : 0;
-							if (!first) printf(",\n");
-							printf("    \"%s\": %.8f", wname, bal);
-							first = 0;
-							free(wb);
-						}
-					}
-					p = end + 1;
+				rpc_set_wallet(rpc, wname);
+				char *wb = rpc_call(rpc, "getbalances", "[]");
+				if (wb) {
+					const char *mine = json_find_object(wb, "mine");
+					double bal = mine ? json_get_double(mine, "trusted") : 0;
+					printf("%12.8f %s\n", bal, wname);
+					free(wb);
 				}
-				printf("\n  }\n");
 			}
+			p = end + 1;
 		}
-	}
-	free(walletlist);
-
-	if (!multi_wallet && !no_wallet) {
+	} else if (!no_wallet) {
 		/* Single wallet or specific -rpcwallet */
-		walletinfo = rpc_call(rpc, "getbalances", "[]");
-		if (walletinfo) {
-			const char *mine = json_find_object(walletinfo, "mine");
-			if (mine) {
-				double balance = json_get_double(mine, "trusted");
-				printf("  \"balance\": %.8f,\n", balance);
-			}
-			free(walletinfo);
-		}
-
-		/* Wallet details */
 		char *winfo = rpc_call(rpc, "getwalletinfo", "[]");
 		if (winfo) {
 			char wname[256] = {0};
 			json_get_string(winfo, "walletname", wname, sizeof(wname));
-			printf("  \"walletname\": \"%s\",\n", wname);
-
-			int64_t unlocked = json_get_int(winfo, "unlocked_until");
-			if (unlocked > 0)
-				printf("  \"unlocked_until\": %lld,\n", (long long)unlocked);
-
-			printf("  \"keypoolsize\": %d,\n", (int)json_get_int(winfo, "keypoolsize"));
-			printf("  \"paytxfee\": %.8f\n", json_get_double(winfo, "paytxfee"));
+			printf("\nWallet: %s\n", wname);
+			printf("Keypool size: %d\n", (int)json_get_int(winfo, "keypoolsize"));
+			printf("Transaction fee rate (-paytxfee) (BTC/kvB): %.8f\n",
+			       json_get_double(winfo, "paytxfee"));
 			free(winfo);
-		} else {
-			/* No wallet info available — skip wallet section */
-			no_wallet = 1;
+		}
+
+		char *balances = rpc_call(rpc, "getbalances", "[]");
+		if (balances) {
+			const char *mine = json_find_object(balances, "mine");
+			if (mine)
+				printf("\nBalance: %.8f\n", json_get_double(mine, "trusted"));
+			free(balances);
 		}
 	}
+	free(walletlist);
 
-	printf("}\n");
+	/* Warnings */
+	if (network) {
+		char warnings[1024] = {0};
+		json_get_string(network, "warnings", warnings, sizeof(warnings));
+		printf("\nWarnings: %s\n", warnings[0] ? warnings : "(none)");
+	}
 
 	free(blockchain);
 	free(network);
@@ -1127,7 +1079,7 @@ int main(int argc, char **argv)
 				fprintf(stderr, "warning: Could not connect to %s:%d — using fallbacks\n",
 				        cfg.host, cfg.port);
 			} else {
-				fprintf(stderr, "error: timeout on transient error: Could not connect to the server %s:%d\n\nMake sure the bitcoind server is running and that you are connecting to the correct RPC port.\n", cfg.host, cfg.port);
+				fprintf(stderr, "error: timeout on transient error: Could not connect to the server %s:%d\n\nMake sure the bitcoind server is running and that you are connecting to the correct RPC port.\nUse \"bitcoin-cli -help\" for more info.\n", cfg.host, cfg.port);
 				return 1;
 			}
 		}
