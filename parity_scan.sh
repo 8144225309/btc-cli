@@ -997,7 +997,11 @@ for level in 1 2 3 4; do
         # Compare line counts as structural similarity
         btc_lines=$(echo "$btc_out" | wc -l)
         ref_lines=$(echo "$ref_out" | wc -l)
-        diff_note "D2.0$level -netinfo=$level" "btc=${btc_lines}lines ref=${ref_lines}lines"
+        if [ "$btc_lines" = "$ref_lines" ]; then
+            pass "D2.0$level -netinfo=$level (${btc_lines} lines)"
+        else
+            diff_note "D2.0$level -netinfo=$level" "btc=${btc_lines}lines ref=${ref_lines}lines"
+        fi
     elif [ -z "$btc_out" ] && [ -n "$ref_out" ]; then
         fail "D2.0$level -netinfo=$level" "btc produced no output"
     elif [ -n "$btc_out" ] && [ -z "$ref_out" ]; then
@@ -1035,7 +1039,11 @@ ref_out=$("$BITCOIN_CLI" $CONN_ARGS -netinfo help 2>/dev/null) || true
 if [ -n "$btc_out" ] && [ -n "$ref_out" ]; then
     btc_lines=$(echo "$btc_out" | wc -l)
     ref_lines=$(echo "$ref_out" | wc -l)
-    diff_note "D8.01 -netinfo help" "btc=${btc_lines}lines ref=${ref_lines}lines"
+    if [ "$btc_lines" = "$ref_lines" ]; then
+        pass "D8.01 -netinfo help (${btc_lines} lines)"
+    else
+        diff_note "D8.01 -netinfo help" "btc=${btc_lines}lines ref=${ref_lines}lines"
+    fi
 elif [ -z "$btc_out" ] && [ -n "$ref_out" ]; then
     fail "D8.01 -netinfo help" "btc produces no help output"
 else

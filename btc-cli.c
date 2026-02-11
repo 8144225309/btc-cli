@@ -592,15 +592,21 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 	char *net_json = NULL;
 	PeerRow peers[256];
 	int peer_count = 0;
-	int total = 0, inbound = 0, outbound = 0, block_relay = 0;
-	int ipv4 = 0, ipv6 = 0, onion = 0, i2p = 0, cjdns = 0;
+	int total = 0, inbound = 0, outbound = 0, block_relay = 0, manual = 0;
+	int ipv4_in = 0, ipv6_in = 0, onion_in = 0, i2p_in = 0, cjdns_in = 0;
+	int ipv4_out = 0, ipv6_out = 0, onion_out = 0, i2p_out = 0, cjdns_out = 0;
+	int block_relay_out = 0;
 	const char *p;
 	int i;
 	time_t now = time(NULL);
 
+	/* Fetch getnetworkinfo first (needed for header banner and local info) */
+	net_json = rpc_call(rpc, "getnetworkinfo", "[]");
+
 	peers_json = rpc_call(rpc, "getpeerinfo", "[]");
 	if (!peers_json) {
 		fprintf(stderr, "error: Could not get peer info\n");
+		free(net_json);
 		return 1;
 	}
 
@@ -645,16 +651,28 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 			}
 		}
 
-		if (strcmp(pr->conn_type, "block-relay-only") == 0)
+		if (strcmp(pr->conn_type, "block-relay-only") == 0) {
 			block_relay++;
+			if (!pr->is_inbound) block_relay_out++;
+		}
+		if (strcmp(pr->conn_type, "manual") == 0)
+			manual++;
 
-		/* Network */
+		/* Network - track per-direction counts */
 		json_get_string(pj, "network", pr->network, sizeof(pr->network));
-		if (strcmp(pr->network, "ipv4") == 0) ipv4++;
-		else if (strcmp(pr->network, "ipv6") == 0) ipv6++;
-		else if (strcmp(pr->network, "onion") == 0) onion++;
-		else if (strcmp(pr->network, "i2p") == 0) i2p++;
-		else if (strcmp(pr->network, "cjdns") == 0) cjdns++;
+		if (pr->is_inbound) {
+			if (strcmp(pr->network, "ipv4") == 0) ipv4_in++;
+			else if (strcmp(pr->network, "ipv6") == 0) ipv6_in++;
+			else if (strcmp(pr->network, "onion") == 0) onion_in++;
+			else if (strcmp(pr->network, "i2p") == 0) i2p_in++;
+			else if (strcmp(pr->network, "cjdns") == 0) cjdns_in++;
+		} else {
+			if (strcmp(pr->network, "ipv4") == 0) ipv4_out++;
+			else if (strcmp(pr->network, "ipv6") == 0) ipv6_out++;
+			else if (strcmp(pr->network, "onion") == 0) onion_out++;
+			else if (strcmp(pr->network, "i2p") == 0) i2p_out++;
+			else if (strcmp(pr->network, "cjdns") == 0) cjdns_out++;
+		}
 
 		/* Timing */
 		pr->minping = json_get_double(pj, "minping");
@@ -683,17 +701,65 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 		p = end + 1;
 	}
 
-	/* Level 1-4: print peer table */
-	if (level >= 1) {
-		/* Header */
-		printf("Peer connections:\n");
-		printf("  %3s  %3s  %-16s %-6s", "#", "<->", "type", "net");
+	/* Header banner from getnetworkinfo */
+	{
+		char subver[256] = {0};
+		char chain[64] = {0};
+		int protover = 0;
+		/* Extract from net_json result */
+		if (net_json) {
+			const char *nr = json_find_value(net_json, "result");
+			if (nr && *nr == '{') {
+				size_t nlen;
+				const char *nend = json_find_closing(nr);
+				char *nobj;
+				if (nend) {
+					nlen = nend - nr + 1;
+					nobj = malloc(nlen + 1);
+					if (nobj) {
+						memcpy(nobj, nr, nlen);
+						nobj[nlen] = '\0';
+						json_get_string(nobj, "subversion", subver, sizeof(subver));
+						protover = (int)json_get_int(nobj, "protocolversion");
+						free(nobj);
+					}
+				}
+			}
+		}
+		/* Get chain from getblockchaininfo */
+		{
+			char *bc = rpc_call(rpc, "getblockchaininfo", "[]");
+			if (bc) {
+				const char *br = json_find_value(bc, "result");
+				if (br && *br == '{') {
+					const char *bend = json_find_closing(br);
+					if (bend) {
+						size_t blen = bend - br + 1;
+						char *bobj = malloc(blen + 1);
+						if (bobj) {
+							memcpy(bobj, br, blen);
+							bobj[blen] = '\0';
+							json_get_string(bobj, "chain", chain, sizeof(chain));
+							free(bobj);
+						}
+					}
+				}
+				free(bc);
+			}
+		}
+		printf("btc-cli client v%s %s - server %d/%s/\n",
+		       BTC_CLI_VERSION, chain[0] ? chain : "main",
+		       protover, subver[0] ? subver : "unknown");
+	}
 
-		printf("  %6s  %6s  %5s  %5s  %5s  %5s  %2s  %8s", "mping", "ping", "send", "recv", "txn", "blk", "hb", "age");
+	/* Level 1-4: print peer table (only when peers exist) */
+	if (level >= 1 && peer_count > 0) {
+		printf("\nPeer connections sorted by direction and min ping\n");
+		printf(" <->   type   net  mping   ping send recv  txn  blk  hb");
 		if (level == 2 || level == 4)
-			printf("  %-21s", "addr");
+			printf("  addr");
 		if (level == 3 || level == 4)
-			printf("  %-24s", "version");
+			printf("  version");
 		printf("\n");
 
 		for (i = 0; i < peer_count; i++) {
@@ -703,15 +769,16 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 			if (outonly && pr->is_inbound)
 				continue;
 
-			const char *dir = pr->is_inbound ? "in" : "out";
+			const char *dir = pr->is_inbound ? " in" : "out";
 			int mping_ms = (int)(pr->minping * 1000);
 			int ping_ms = (int)(pr->pingtime * 1000);
 
-			/* Time since last send/recv/tx/block */
+			/* Time since last send/recv in seconds */
 			int send_ago = pr->lastsend ? (int)(now - pr->lastsend) : -1;
 			int recv_ago = pr->lastrecv ? (int)(now - pr->lastrecv) : -1;
-			int tx_ago = pr->last_transaction ? (int)(now - pr->last_transaction) : -1;
-			int blk_ago = pr->last_block ? (int)(now - pr->last_block) : -1;
+			/* Time since last tx/block in minutes */
+			int tx_min = pr->last_transaction ? (int)((now - pr->last_transaction) / 60) : -1;
+			int blk_min = pr->last_block ? (int)((now - pr->last_block) / 60) : -1;
 
 			/* Connection age */
 			int age_secs = pr->conntime ? (int)(now - pr->conntime) : 0;
@@ -725,54 +792,115 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 			else
 				snprintf(age_str, sizeof(age_str), "%ds", age_secs);
 
-			printf("  %3d  %3s  %-16s %-6s", i + 1, dir, pr->conn_type, pr->network);
-			printf("  %6d  %6d", mping_ms, ping_ms);
+			/* Map connection_type to short form */
+			const char *type_str = "full";
+			if (strcmp(pr->conn_type, "block-relay-only") == 0) type_str = "block";
+			else if (strcmp(pr->conn_type, "manual") == 0) type_str = "manual";
+			else if (strcmp(pr->conn_type, "feeler") == 0) type_str = "feeler";
+			else if (strcmp(pr->conn_type, "addr-fetch") == 0) type_str = "addr";
 
-			if (send_ago >= 0) printf("  %5d", send_ago); else printf("  %5s", "-");
-			if (recv_ago >= 0) printf("  %5d", recv_ago); else printf("  %5s", "-");
-			if (tx_ago >= 0) printf("  %5d", tx_ago); else printf("  %5s", "-");
-			if (blk_ago >= 0) printf("  %5d", blk_ago); else printf("  %5s", "-");
+			printf(" %3s  %6s  %4s", dir, type_str, pr->network);
+			printf("  %5d  %5d", mping_ms, ping_ms);
 
-			/* hb column: compact block relay status
-			 * "." = we selected peer as high-bandwidth (hb_to)
-			 * "*" = peer selected us as high-bandwidth (hb_from) */
+			if (send_ago >= 0) printf("  %3d", send_ago); else printf("    .");
+			if (recv_ago >= 0) printf("  %3d", recv_ago); else printf("    .");
+			if (tx_min >= 0) printf("  %3d", tx_min); else printf("    *");
+			if (blk_min >= 0) printf("  %3d", blk_min); else printf("    .");
+
+			/* hb column */
 			{
 				char hb_str[3] = "  ";
 				if (pr->bip152_hb_to) hb_str[0] = '.';
 				if (pr->bip152_hb_from) hb_str[1] = '*';
 				printf("  %2s", hb_str);
 			}
-			printf("  %8s", age_str);
 
 			if (level == 2 || level == 4)
-				printf("  %-21s", pr->addr);
+				printf("  %s", pr->addr);
 			if (level == 3 || level == 4)
-				printf("  %-24s", pr->subver);
+				printf("  %s", pr->subver);
 			printf("\n");
 		}
-		printf("\n");
 	}
 
-	/* Summary (all levels) */
-	printf("Peer connections: %d (in %d, out %d", total, inbound, outbound);
-	if (block_relay > 0) printf(", block-relay %d", block_relay);
-	printf(")\n");
+	/* Network summary grid (all levels) */
+	{
+		int ipv4_total = ipv4_in + ipv4_out;
+		int ipv6_total = ipv6_in + ipv6_out;
+		int onion_total = onion_in + onion_out;
+		int i2p_total = i2p_in + i2p_out;
+		int cjdns_total = cjdns_in + cjdns_out;
 
-	printf("\nBy network:");
-	if (ipv4 > 0) printf("  ipv4 %d", ipv4);
-	if (ipv6 > 0) printf("  ipv6 %d", ipv6);
-	if (onion > 0) printf("  onion %d", onion);
-	if (i2p > 0) printf("  i2p %d", i2p);
-	if (cjdns > 0) printf("  cjdns %d", cjdns);
-	printf("\n");
+		/* Determine which optional network columns to show */
+		int show_onion = (onion_total > 0);
+		int show_i2p = (i2p_total > 0);
+		int show_cjdns = (cjdns_total > 0);
 
-	/* Local addresses from getnetworkinfo */
-	net_json = rpc_call(rpc, "getnetworkinfo", "[]");
+		/* Header row */
+		printf("\n        ipv4    ipv6");
+		if (show_onion) printf("   onion");
+		if (show_i2p) printf("     i2p");
+		if (show_cjdns) printf("   cjdns");
+		printf("   total   block\n");
+
+		/* In row */
+		printf("in    %5d  %5d", ipv4_in, ipv6_in);
+		if (show_onion) printf("  %5d", onion_in);
+		if (show_i2p) printf("  %5d", i2p_in);
+		if (show_cjdns) printf("  %5d", cjdns_in);
+		printf("  %5d\n", inbound);
+
+		/* Out row (includes block relay count) */
+		printf("out   %5d  %5d", ipv4_out, ipv6_out);
+		if (show_onion) printf("  %5d", onion_out);
+		if (show_i2p) printf("  %5d", i2p_out);
+		if (show_cjdns) printf("  %5d", cjdns_out);
+		printf("  %5d  %5d\n", outbound, block_relay_out);
+
+		/* Total row */
+		printf("total %5d  %5d", ipv4_total, ipv6_total);
+		if (show_onion) printf("  %5d", onion_total);
+		if (show_i2p) printf("  %5d", i2p_total);
+		if (show_cjdns) printf("  %5d", cjdns_total);
+		printf("  %5d\n", total);
+	}
+
+	/* Local services from getnetworkinfo */
+	if (net_json) {
+		const char *nr = json_find_value(net_json, "result");
+		if (nr && *nr == '{') {
+			const char *services = json_find_array(nr, "localservicesnames");
+			if (services) {
+				printf("\nLocal services:");
+				/* Parse array of strings */
+				const char *sp = services;
+				int first = 1;
+				while (*sp) {
+					const char *q = strchr(sp, '"');
+					if (!q) break;
+					q++;
+					const char *qe = strchr(q, '"');
+					if (!qe) break;
+					size_t slen = qe - q;
+					if (slen > 0) {
+						printf("%s %.*s", first ? "" : ",", (int)slen, q);
+						first = 0;
+					}
+					sp = qe + 1;
+				}
+				printf("\n");
+			}
+		}
+	}
+
+	/* Local addresses */
 	if (net_json) {
 		const char *local = json_find_array(net_json, "localaddresses");
+		int has_addr = 0;
 		if (local) {
 			const char *la = strchr(local, '{');
 			if (la) {
+				has_addr = 1;
 				printf("\nLocal addresses:");
 				while (la) {
 					const char *la_end = json_find_closing(la);
@@ -794,7 +922,12 @@ static int handle_netinfo(RpcClient *rpc, int level, int outonly)
 				printf("\n");
 			}
 		}
+		if (!has_addr) {
+			printf("\nLocal addresses: n/a\n");
+		}
 		free(net_json);
+	} else {
+		printf("\nLocal addresses: n/a\n");
 	}
 
 	free(peers_json);
@@ -1010,10 +1143,109 @@ int main(int argc, char **argv)
 		return ret;
 	}
 	if (cfg.netinfo >= 0) {
-		/* Check for "outonly"/"o" in remaining args */
+		/* Check for "help"/"h" or "outonly"/"o" in remaining args */
 		int outonly = 0;
 		if (cfg.cmd_index >= 0 && cfg.cmd_index < argc) {
 			const char *arg = argv[cfg.cmd_index];
+			if (strcmp(arg, "help") == 0 || strcmp(arg, "h") == 0) {
+				printf(
+					"-netinfo (level [outonly]) | help\n"
+					"\n"
+					"Returns a network peer connections dashboard with information from the remote server.\n"
+					"This human-readable interface will change regularly and is not intended to be a stable API.\n"
+					"Under the hood, -netinfo fetches the data by calling getpeerinfo and getnetworkinfo.\n"
+					"An optional argument from 0 to 4 can be passed for different peers listings; values above 4 up to 255 are parsed as 4.\n"
+					"If that argument is passed, an optional additional \"outonly\" argument may be passed to see outbound peers only.\n"
+					"Pass \"help\" or \"h\" to see this detailed help documentation.\n"
+					"If more than two arguments are passed, only the first two are read and parsed.\n"
+					"Suggestion: use -netinfo with the Linux watch(1) command for a live dashboard; see example below.\n"
+					"\n"
+					"Arguments:\n"
+					"1. level (integer 0-4, optional)  Specify the info level of the peers dashboard (default 0):\n"
+					"                                  0 - Peer counts for each reachable network as well as for block relay peers\n"
+					"                                      and manual peers, and the list of local addresses and ports\n"
+					"                                  1 - Like 0 but preceded by a peers listing (without address and version columns)\n"
+					"                                  2 - Like 1 but with an address column\n"
+					"                                  3 - Like 1 but with a version column\n"
+					"                                  4 - Like 1 but with both address and version columns\n"
+					"2. outonly (\"outonly\" or \"o\", optional) Return the peers listing with outbound peers only, i.e. to save screen space\n"
+					"                                        when a node has many inbound peers. Only valid if a level is passed.\n"
+					"\n"
+					"help (\"help\" or \"h\", optional) Print this help documentation instead of the dashboard.\n"
+					"\n"
+					"Result:\n"
+					"\n"
+					"* The peers listing in levels 1-4 displays all of the peers sorted by direction and minimum ping time:\n"
+					"\n"
+					"  Column   Description\n"
+					"  ------   -----------\n"
+					"  <->      Direction\n"
+					"           \"in\"  - inbound connections are those initiated by the peer\n"
+					"           \"out\" - outbound connections are those initiated by us\n"
+					"  type     Type of peer connection\n"
+					"           \"full\"   - full relay, the default\n"
+					"           \"block\"  - block relay; like full relay but does not relay transactions or addresses\n"
+					"           \"manual\" - peer we manually added using RPC addnode or the -addnode/-connect config options\n"
+					"           \"feeler\" - short-lived connection for testing addresses\n"
+					"           \"addr\"   - address fetch; short-lived connection for requesting addresses\n"
+					"  net      Network the peer connected through (\"ipv4\", \"ipv6\", \"onion\", \"i2p\", \"cjdns\", or \"npr\" (not publicly routable))\n"
+					"  serv     Services offered by the peer\n"
+					"           \"n\" - NETWORK: peer can serve the full block chain\n"
+					"           \"b\" - BLOOM: peer can handle bloom-filtered connections (see BIP 111)\n"
+					"           \"w\" - WITNESS: peer can be asked for blocks and transactions with witness data (SegWit)\n"
+					"           \"c\" - COMPACT_FILTERS: peer can handle basic block filter requests (see BIPs 157 and 158)\n"
+					"           \"l\" - NETWORK_LIMITED: peer limited to serving only the last 288 blocks (~2 days)\n"
+					"           \"2\" - P2P_V2: peer supports version 2 P2P transport protocol, as defined in BIP 324\n"
+					"           \"u\" - UNKNOWN: unrecognized bit flag\n"
+					"  v        Version of transport protocol used for the connection\n"
+					"  mping    Minimum observed ping time, in milliseconds (ms)\n"
+					"  ping     Last observed ping time, in milliseconds (ms)\n"
+					"  send     Time since last message sent to the peer, in seconds\n"
+					"  recv     Time since last message received from the peer, in seconds\n"
+					"  txn      Time since last novel transaction received from the peer and accepted into our mempool, in minutes\n"
+					"           \"*\" - we do not relay transactions to this peer (getpeerinfo \"relaytxes\" is false)\n"
+					"  blk      Time since last novel block passing initial validity checks received from the peer, in minutes\n"
+					"  hb       High-bandwidth BIP152 compact block relay\n"
+					"           \".\" (to)   - we selected the peer as a high-bandwidth peer\n"
+					"           \"*\" (from) - the peer selected us as a high-bandwidth peer\n"
+					"  addrp    Total number of addresses processed, excluding those dropped due to rate limiting\n"
+					"           \".\" - we do not relay addresses to this peer (getpeerinfo \"addr_relay_enabled\" is false)\n"
+					"  addrl    Total number of addresses dropped due to rate limiting\n"
+					"  age      Duration of connection to the peer, in minutes\n"
+					"  asmap    Mapped AS (Autonomous System) number at the end of the BGP route to the peer, used for diversifying\n"
+					"           peer selection (only displayed if the -asmap config option is set)\n"
+					"  id       Peer index, in increasing order of peer connections since node startup\n"
+					"  address  IP address and port of the peer\n"
+					"  version  Peer version and subversion concatenated, e.g. \"70016/Satoshi:21.0.0/\"\n"
+					"\n"
+					"* The peer counts table displays the number of peers for each reachable network as well as\n"
+					"  the number of block relay peers and manual peers.\n"
+					"\n"
+					"* The local addresses table lists each local address broadcast by the node, the port, and the score.\n"
+					"\n"
+					"Examples:\n"
+					"\n"
+					"Peer counts table of reachable networks and list of local addresses\n"
+					"> btc-cli -netinfo\n"
+					"\n"
+					"The same, preceded by a peers listing without address and version columns\n"
+					"> btc-cli -netinfo 1\n"
+					"\n"
+					"Full dashboard\n"
+					"> btc-cli -netinfo 4\n"
+					"\n"
+					"Full dashboard, but with outbound peers only\n"
+					"> btc-cli -netinfo 4 outonly\n"
+					"\n"
+					"Full live dashboard, adjust --interval or --no-title as needed (Linux)\n"
+					"> watch --interval 1 --no-title btc-cli -netinfo 4\n"
+					"\n"
+					"See this help\n"
+					"> btc-cli -netinfo help\n"
+				);
+				rpc_disconnect(&rpc);
+				return 0;
+			}
 			if (strcmp(arg, "outonly") == 0 || strcmp(arg, "o") == 0)
 				outonly = 1;
 		}
