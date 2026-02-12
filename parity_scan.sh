@@ -2113,6 +2113,107 @@ else
     fail "I15.01 -version=btc-cli" "unexpected output: [$BTCVER_OUT]"
 fi
 
+# I16: getblock/getblockheader height auto-resolve
+subsection "I16: getblock height auto-resolve"
+BTC_OUT=$(btc getblock 0 2>/dev/null) || true
+if echo "$BTC_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'hash' in d" 2>/dev/null; then
+    pass "I16.01 getblock 0 returns genesis block"
+else
+    fail "I16.01 getblock 0" "unexpected output: ${BTC_OUT:0:100}"
+fi
+# Compare: getblock 0 should match getblock $(getblockhash 0)
+GENESIS_HASH=$(btc getblockhash 0 2>/dev/null) || true
+if [ -n "$GENESIS_HASH" ]; then
+    BTC_OUT2=$(btc getblock "$GENESIS_HASH" 2>/dev/null) || true
+    if [ "$BTC_OUT" = "$BTC_OUT2" ]; then
+        pass "I16.02 getblock 0 matches getblock \$(getblockhash 0)"
+    else
+        fail "I16.02 getblock 0 parity" "outputs differ"
+    fi
+else
+    fail "I16.02 getblock 0 parity" "could not get genesis hash"
+fi
+# getblockheader height auto-resolve
+HDR_OUT=$(btc getblockheader 0 2>/dev/null) || true
+if echo "$HDR_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'hash' in d" 2>/dev/null; then
+    pass "I16.03 getblockheader 0 returns genesis header"
+else
+    fail "I16.03 getblockheader 0" "unexpected output: ${HDR_OUT:0:100}"
+fi
+
+# I17: -health
+subsection "I17: -health"
+HEALTH_OUT=$(btc -health 2>/dev/null) || true
+HEALTH_RC=$?
+if echo "$HEALTH_OUT" | grep -q "Synced"; then
+    pass "I17.01 -health outputs Synced"
+else
+    fail "I17.01 -health" "no Synced: [$HEALTH_OUT]"
+fi
+if echo "$HEALTH_OUT" | grep -q "Chain: regtest"; then
+    pass "I17.02 -health shows Chain: regtest"
+else
+    fail "I17.02 -health chain" "no Chain: regtest: [$HEALTH_OUT]"
+fi
+
+# I18: -progress
+subsection "I18: -progress"
+PROGRESS_OUT=$(btc -progress 2>/dev/null) || true
+if echo "$PROGRESS_OUT" | grep -qE 'block [0-9]+.*[0-9.]+%'; then
+    pass "I18.01 -progress shows block count and percentage"
+else
+    fail "I18.01 -progress" "unexpected output: [$PROGRESS_OUT]"
+fi
+
+# I19: -wait=N (test with an already-confirmed transaction)
+subsection "I19: -wait=N"
+# Generate a block, get a txid from it
+WAIT_ADDR=$(btc getnewaddress 2>/dev/null) || true
+if [ -n "$WAIT_ADDR" ]; then
+    WAIT_TXID=$(btc sendtoaddress "$WAIT_ADDR" 0.001 2>/dev/null) || true
+    if [ -n "$WAIT_TXID" ]; then
+        # Generate a block to confirm it
+        btc generatetoaddress 1 "$WAIT_ADDR" >/dev/null 2>&1
+        # Now -wait=1 should return immediately since it has >= 1 confirmation
+        WAIT_OUT=$(btc -wait=1 gettransaction "$WAIT_TXID" 2>/dev/null) || true
+        if echo "$WAIT_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['confirmations']>=1" 2>/dev/null; then
+            pass "I19.01 -wait=1 returns with confirmations >= 1"
+        else
+            fail "I19.01 -wait=1" "unexpected output: ${WAIT_OUT:0:200}"
+        fi
+    else
+        fail "I19.01 -wait=1" "could not send transaction"
+    fi
+else
+    fail "I19.01 -wait=1" "could not get address"
+fi
+
+# I20: offline help
+subsection "I20: offline help"
+HELP_OUT=$("$BTC_CLI" -rpcport=19999 -rpcuser=x -rpcpassword=x help getblock 2>/dev/null) || true
+HELP_RC=$?
+if echo "$HELP_OUT" | grep -qi "getblock" && [ "$HELP_RC" = "0" ]; then
+    pass "I20.01 help getblock works offline"
+else
+    fail "I20.01 offline help" "rc=$HELP_RC output: ${HELP_OUT:0:200}"
+fi
+
+# I21: -watch=N (verify it produces output, kill after 2s)
+subsection "I21: -watch=N"
+WATCH_TMP="/tmp/parity-watch-$$"
+"$BTC_CLI" $CONN_ARGS -watch=1 getblockcount > "$WATCH_TMP" 2>/dev/null &
+WATCH_PID=$!
+sleep 2
+kill "$WATCH_PID" 2>/dev/null || true
+wait "$WATCH_PID" 2>/dev/null || true
+WATCH_OUT=$(cat "$WATCH_TMP" 2>/dev/null) || true
+rm -f "$WATCH_TMP"
+if [ -n "$WATCH_OUT" ]; then
+    pass "I21.01 -watch=1 produces output"
+else
+    fail "I21.01 -watch=1" "no output produced"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════

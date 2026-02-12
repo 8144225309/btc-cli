@@ -53,8 +53,73 @@ GENERIC_HANDLER(getblockchaininfo)
 GENERIC_HANDLER(getblockcount)
 GENERIC_HANDLER(getbestblockhash)
 GENERIC_HANDLER(getblockhash)
-GENERIC_HANDLER(getblock)
-GENERIC_HANDLER(getblockheader)
+/* Smart getblock: auto-resolve numeric height to hash */
+static int cmd_getblock(RpcClient *rpc, int argc, char **argv, char **out)
+{
+	if (argc >= 1 && argv[0][0] != '\0') {
+		const char *s = argv[0];
+		int all_digits = 1;
+		int len = 0;
+		while (*s) { if (!isdigit(*s)) { all_digits = 0; break; } s++; len++; }
+		/* Only treat as height if all digits AND not 64 chars (block hash length) */
+		if (all_digits && len < 64) {
+			char params[64];
+			char *response;
+			int error_code;
+			snprintf(params, sizeof(params), "[%s]", argv[0]);
+			response = rpc_call(rpc, "getblockhash", params);
+			if (!response) {
+				*out = strdup("error: Could not connect to the server");
+				return 28;
+			}
+			char *hash = method_extract_result(response, &error_code);
+			free(response);
+			if (error_code != 0 || !hash) {
+				*out = hash ? hash : strdup("error: getblockhash failed");
+				return error_code != 0 ? abs(error_code) : 1;
+			}
+			argv[0] = hash;
+			int ret = cmd_generic(rpc, "getblock", argc, argv, out);
+			free(hash);
+			return ret;
+		}
+	}
+	return cmd_generic(rpc, "getblock", argc, argv, out);
+}
+
+/* Smart getblockheader: auto-resolve numeric height to hash */
+static int cmd_getblockheader(RpcClient *rpc, int argc, char **argv, char **out)
+{
+	if (argc >= 1 && argv[0][0] != '\0') {
+		const char *s = argv[0];
+		int all_digits = 1;
+		int len = 0;
+		while (*s) { if (!isdigit(*s)) { all_digits = 0; break; } s++; len++; }
+		/* Only treat as height if all digits AND not 64 chars (block hash length) */
+		if (all_digits && len < 64) {
+			char params[64];
+			char *response;
+			int error_code;
+			snprintf(params, sizeof(params), "[%s]", argv[0]);
+			response = rpc_call(rpc, "getblockhash", params);
+			if (!response) {
+				*out = strdup("error: Could not connect to the server");
+				return 28;
+			}
+			char *hash = method_extract_result(response, &error_code);
+			free(response);
+			if (error_code != 0 || !hash) {
+				*out = hash ? hash : strdup("error: getblockhash failed");
+				return error_code != 0 ? abs(error_code) : 1;
+			}
+			argv[0] = hash;
+			int ret = cmd_generic(rpc, "getblockheader", argc, argv, out);
+			free(hash);
+			return ret;
+		}
+	}
+	return cmd_generic(rpc, "getblockheader", argc, argv, out);
+}
 GENERIC_HANDLER(getdifficulty)
 GENERIC_HANDLER(getchaintips)
 GENERIC_HANDLER(getmempoolinfo)

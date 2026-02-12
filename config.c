@@ -189,6 +189,24 @@ static int parse_option(Config *cfg, const char *arg)
 		cfg->batch_mode = 1;
 		return 1;
 	}
+	if (strcmp(arg, "-health") == 0) {
+		cfg->health = 1;
+		return 1;
+	}
+	if (strcmp(arg, "-progress") == 0) {
+		cfg->progress = 1;
+		return 1;
+	}
+	if (strncmp(arg, "-watch=", 7) == 0) {
+		cfg->watch_interval = atoi(arg + 7);
+		if (cfg->watch_interval < 1) cfg->watch_interval = 1;
+		return 1;
+	}
+	if (strncmp(arg, "-wait=", 6) == 0) {
+		cfg->wait_confirms = atoi(arg + 6);
+		if (cfg->wait_confirms < 1) cfg->wait_confirms = 1;
+		return 1;
+	}
 	if (strncmp(arg, "-completions=", 13) == 0) {
 		strncpy(cfg->completions, arg + 13, sizeof(cfg->completions) - 1);
 		return 1;
@@ -318,7 +336,8 @@ static const char *known_flags[] = {
 	"-named", "-stdin", "-help", "-getinfo", "-netinfo", "-addrinfo",
 	"-generate", "-version", "-version=", "-rpcwait", "-stdinrpcpass",
 	"-stdinwalletpassphrase", "-color", "-verify", "-human",
-	"-sats", "-batch",
+	"-sats", "-batch", "-health", "-progress",
+	"-watch=", "-wait=",
 	"-rpcconnect=", "-rpcport=", "-rpcuser=", "-rpcpassword=",
 	"-rpccookiefile=", "-rpcwallet=", "-datadir=", "-conf=",
 	"-rpcclienttimeout=", "-rpcwaittimeout=", "-chain=",
@@ -654,6 +673,18 @@ void config_print_usage(const char *prog)
 	"\n"
 	"  -version=btc-cli\n"
 	"       Show btc-cli version and exit\n"
+	"\n"
+	"  -health\n"
+	"       Show node health summary (synced, peers, mempool, last block age)\n"
+	"\n"
+	"  -progress\n"
+	"       Show blockchain sync progress with percentage and block count\n"
+	"\n"
+	"  -watch=<n>\n"
+	"       Repeat any RPC command every N seconds (like watch(1))\n"
+	"\n"
+	"  -wait=<n>\n"
+	"       Wait until transaction has N confirmations before returning\n"
 	"\n"
 	"  -help=<command>\n"
 	"       Show help for a specific RPC command\n"

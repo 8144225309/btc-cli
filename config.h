@@ -79,6 +79,10 @@ typedef struct {
 	int sats_mode;     /* -sats: display BTC amounts as satoshis */
 	int format;        /* 0=default, 1=table, 2=csv */
 	int batch_mode;    /* -batch: read commands from stdin */
+	int health;        /* -health: node health check */
+	int progress;      /* -progress: sync progress display */
+	int watch_interval; /* -watch=N: repeat every N seconds */
+	int wait_confirms;  /* -wait=N: wait for N confirmations */
 	char completions[16]; /* -completions=bash|zsh|fish */
 	int verify;        /* -verify: P2P tx propagation check */
 	int verify_peers;  /* -verify-peers=N: peers to check (default 3) */
