@@ -1910,14 +1910,7 @@ else
     fail "I2.01 BTC_WALLET env var" "no wallet loaded to test with"
 fi
 
-# I3: -empty flag
-subsection "I3: -empty flag"
-EMPTY_ERR=$("$BTC_CLI" $CONN_ARGS -empty ping 2>&1 >/dev/null) || true
-if echo "$EMPTY_ERR" | grep -q "(empty response)"; then
-    pass "I3.01 -empty flag produces stderr note"
-else
-    fail "I3.01 -empty flag" "no '(empty response)' in stderr: [$EMPTY_ERR]"
-fi
+# I3: (removed — -empty flag deleted)
 
 # I4: -field extraction
 subsection "I4: -field extraction"
@@ -2063,14 +2056,56 @@ else
     fail "I13.03 -completions=fish" "missing 'complete -c btc-cli'"
 fi
 
-# I14: -human flag with -getinfo
+# I14: -human flag
 subsection "I14: -human flag"
+
+# I14.01: -human -getinfo shows "Synced" (regtest is always fully synced)
 HUMAN_OUT=$(btc -human -getinfo 2>/dev/null) || true
-# Regtest node is always fully synced, so -human should show "Synced"
 if echo "$HUMAN_OUT" | grep -q "Synced"; then
     pass "I14.01 -human -getinfo shows Synced"
 else
-    fail "I14.01 -human flag" "expected 'Synced': ${HUMAN_OUT:0:200}"
+    fail "I14.01 -human -getinfo" "expected 'Synced': ${HUMAN_OUT:0:200}"
+fi
+
+# I14.02: -human getblock — timestamp fields become readable dates
+BEST_HASH=$(btc getbestblockhash 2>/dev/null) || true
+if [ -n "$BEST_HASH" ]; then
+    HUMAN_BLOCK=$(btc -human getblock "$BEST_HASH" 2>/dev/null) || true
+    if echo "$HUMAN_BLOCK" | grep -qE '"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}"'; then
+        pass "I14.02 -human getblock has readable timestamps"
+    else
+        fail "I14.02 -human getblock" "no YYYY-MM-DD date found: ${HUMAN_BLOCK:0:300}"
+    fi
+else
+    fail "I14.02 -human getblock" "could not get best block hash"
+fi
+
+# I14.03: -human getblockchaininfo — size_on_disk is human-readable bytes
+HUMAN_BCI=$(btc -human getblockchaininfo 2>/dev/null) || true
+if echo "$HUMAN_BCI" | grep -qE '"[0-9.]+ [KMGT]?B"'; then
+    pass "I14.03 -human getblockchaininfo has readable size_on_disk"
+else
+    fail "I14.03 -human size_on_disk" "no readable bytes found: ${HUMAN_BCI:0:300}"
+fi
+
+# I14.04: -human getblock — mediantime is also humanized (second timestamp key)
+if [ -n "$BEST_HASH" ]; then
+    HUMAN_BLOCK2=$(btc -human getblock "$BEST_HASH" 2>/dev/null) || true
+    NTIME=$(echo "$HUMAN_BLOCK2" | grep -c '"[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} [0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}"')
+    if [ "$NTIME" -ge 2 ] 2>/dev/null; then
+        pass "I14.04 -human getblock has multiple humanized timestamps"
+    else
+        fail "I14.04 -human getblock timestamps" "expected >=2 dates, got $NTIME"
+    fi
+else
+    fail "I14.04 -human getblock timestamps" "no best block hash"
+fi
+
+# I14.05: -human getblockchaininfo — verificationprogress shows Synced or percentage
+if echo "$HUMAN_BCI" | grep -qE '"Synced"|"[0-9.]+%"'; then
+    pass "I14.05 -human verificationprogress is humanized"
+else
+    fail "I14.05 -human verificationprogress" "no Synced/percentage: ${HUMAN_BCI:0:300}"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════

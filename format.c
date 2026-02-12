@@ -1,4 +1,4 @@
-/* Output formatting extensions: -field, -sats, -format=table/csv */
+/* Output formatting extensions: -field, -sats, -human, -format=table/csv */
 
 #define _GNU_SOURCE
 #include "format.h"
@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 
 /* ─── -field=path ───────────────────────────────────────────────────── */
 
@@ -571,4 +572,270 @@ int format_csv(FILE *out, const char *json)
 	}
 
 	return 0;
+}
+
+/* ─── -human ────────────────────────────────────────────────────────── */
+
+/* Key categories for humanization */
+typedef enum {
+	HUMAN_NONE,
+	HUMAN_TIMESTAMP,
+	HUMAN_BYTES,
+	HUMAN_DURATION,
+	HUMAN_LARGE_NUMBER,
+	HUMAN_PROGRESS
+} HumanCategory;
+
+static HumanCategory classify_key(const char *key, size_t len)
+{
+	/* Timestamps */
+	static const char *ts_keys[] = {
+		"time", "blocktime", "timereceived", "mediantime",
+		"startingtime", "conntime", "lastsend", "lastrecv",
+		"last_transaction", "last_block", "ban_created",
+		"banned_until", NULL
+	};
+	/* Byte sizes */
+	static const char *byte_keys[] = {
+		"size_on_disk", "totalbytesrecv", "totalbytessent", NULL
+	};
+	/* Durations */
+	static const char *dur_keys[] = {
+		"uptime", NULL
+	};
+	/* Large numbers */
+	static const char *large_keys[] = {
+		"difficulty", "networkhashps", NULL
+	};
+	/* Progress */
+	static const char *prog_keys[] = {
+		"verificationprogress", NULL
+	};
+
+	const char **list;
+	for (list = ts_keys; *list; list++)
+		if (strlen(*list) == len && memcmp(*list, key, len) == 0)
+			return HUMAN_TIMESTAMP;
+	for (list = byte_keys; *list; list++)
+		if (strlen(*list) == len && memcmp(*list, key, len) == 0)
+			return HUMAN_BYTES;
+	for (list = dur_keys; *list; list++)
+		if (strlen(*list) == len && memcmp(*list, key, len) == 0)
+			return HUMAN_DURATION;
+	for (list = large_keys; *list; list++)
+		if (strlen(*list) == len && memcmp(*list, key, len) == 0)
+			return HUMAN_LARGE_NUMBER;
+	for (list = prog_keys; *list; list++)
+		if (strlen(*list) == len && memcmp(*list, key, len) == 0)
+			return HUMAN_PROGRESS;
+	return HUMAN_NONE;
+}
+
+/* Format a number according to its category, writing a quoted JSON string.
+ * Returns number of chars written, or 0 if no transformation. */
+static int humanize_number(char *out, size_t outsize, const char *numstr,
+                           size_t numlen, HumanCategory cat)
+{
+	char tmp[64];
+	if (numlen >= sizeof(tmp)) return 0;
+	memcpy(tmp, numstr, numlen);
+	tmp[numlen] = '\0';
+
+	if (cat == HUMAN_TIMESTAMP) {
+		long long val = strtoll(tmp, NULL, 10);
+		if (val <= 0) return 0;
+		time_t t = (time_t)val;
+		struct tm *tm = gmtime(&t);
+		if (!tm) return 0;
+		return snprintf(out, outsize, "\"%04d-%02d-%02d %02d:%02d:%02d\"",
+			tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+			tm->tm_hour, tm->tm_min, tm->tm_sec);
+	}
+
+	if (cat == HUMAN_BYTES) {
+		double val = strtod(tmp, NULL);
+		if (val < 0) return 0;
+		if (val >= 1073741824.0)
+			return snprintf(out, outsize, "\"%.1f GB\"", val / 1073741824.0);
+		if (val >= 1048576.0)
+			return snprintf(out, outsize, "\"%.1f MB\"", val / 1048576.0);
+		if (val >= 1024.0)
+			return snprintf(out, outsize, "\"%.1f KB\"", val / 1024.0);
+		return snprintf(out, outsize, "\"%.0f B\"", val);
+	}
+
+	if (cat == HUMAN_DURATION) {
+		long long secs = strtoll(tmp, NULL, 10);
+		if (secs < 0) return 0;
+		int d = (int)(secs / 86400);
+		int h = (int)((secs % 86400) / 3600);
+		int m = (int)((secs % 3600) / 60);
+		return snprintf(out, outsize, "\"%dd %dh %dm\"", d, h, m);
+	}
+
+	if (cat == HUMAN_LARGE_NUMBER) {
+		double val = strtod(tmp, NULL);
+		double abs_val = val < 0 ? -val : val;
+		if (abs_val >= 1e12)
+			return snprintf(out, outsize, "\"%.2fT\"", val / 1e12);
+		if (abs_val >= 1e9)
+			return snprintf(out, outsize, "\"%.2fB\"", val / 1e9);
+		if (abs_val >= 1e6)
+			return snprintf(out, outsize, "\"%.2fM\"", val / 1e6);
+		if (abs_val >= 1e3)
+			return snprintf(out, outsize, "\"%.2fK\"", val / 1e3);
+		return 0; /* Small number, leave as-is */
+	}
+
+	if (cat == HUMAN_PROGRESS) {
+		double val = strtod(tmp, NULL);
+		if (val >= 0.9999)
+			return snprintf(out, outsize, "\"Synced\"");
+		return snprintf(out, outsize, "\"%.2f%%\"", val * 100.0);
+	}
+
+	return 0;
+}
+
+char *format_human(const char *json)
+{
+	size_t len = strlen(json);
+	size_t bufsize = len * 2 + 256;
+	char *buf = malloc(bufsize);
+	if (!buf) return NULL;
+
+	const char *p = json;
+	size_t pos = 0;
+	int in_string = 0;
+
+	/* Track the last key we saw */
+	const char *last_key = NULL;
+	size_t last_key_len = 0;
+	int expect_value = 0; /* 1 = next non-ws token is the value for last_key */
+
+	while (*p) {
+		/* Grow buffer if needed */
+		if (pos + 128 > bufsize) {
+			bufsize *= 2;
+			buf = realloc(buf, bufsize);
+			if (!buf) return NULL;
+		}
+
+		if (*p == '"' && (p == json || *(p-1) != '\\')) {
+			if (!in_string) {
+				/* Opening quote — find closing quote */
+				const char *end = p + 1;
+				while (*end && !(*end == '"' && *(end-1) != '\\'))
+					end++;
+
+				if (expect_value) {
+					/* This is a string value, not a number — copy as-is */
+					expect_value = 0;
+					size_t span = end - p + 1;
+					if (pos + span + 1 > bufsize) {
+						bufsize = pos + span + 256;
+						buf = realloc(buf, bufsize);
+						if (!buf) return NULL;
+					}
+					memcpy(buf + pos, p, span);
+					pos += span;
+					p = end + 1;
+					continue;
+				}
+
+				/* Check if this is a key (followed by ':') */
+				const char *after = end + 1;
+				while (*after == ' ' || *after == '\t' || *after == '\n' || *after == '\r')
+					after++;
+				if (*after == ':') {
+					/* It's a key */
+					last_key = p + 1;
+					last_key_len = end - p - 1;
+					/* Copy the key string as-is */
+					size_t span = end - p + 1;
+					memcpy(buf + pos, p, span);
+					pos += span;
+					p = end + 1;
+					continue;
+				}
+			}
+			in_string = !in_string;
+			buf[pos++] = *p++;
+			continue;
+		}
+
+		if (in_string) {
+			buf[pos++] = *p++;
+			continue;
+		}
+
+		if (*p == ':') {
+			buf[pos++] = *p++;
+			if (last_key)
+				expect_value = 1;
+			continue;
+		}
+
+		/* Check for a number that might need transformation */
+		if (expect_value && (*p == '-' || (*p >= '0' && *p <= '9'))) {
+			expect_value = 0;
+
+			HumanCategory cat = HUMAN_NONE;
+			if (last_key)
+				cat = classify_key(last_key, last_key_len);
+
+			if (cat != HUMAN_NONE) {
+				/* Capture the full number */
+				const char *numstart = p;
+				if (*p == '-') p++;
+				while (*p >= '0' && *p <= '9') p++;
+				if (*p == '.') {
+					p++;
+					while (*p >= '0' && *p <= '9') p++;
+				}
+				/* Handle scientific notation */
+				if (*p == 'e' || *p == 'E') {
+					p++;
+					if (*p == '+' || *p == '-') p++;
+					while (*p >= '0' && *p <= '9') p++;
+				}
+				size_t numlen = p - numstart;
+
+				char human_buf[128];
+				int hlen = humanize_number(human_buf, sizeof(human_buf),
+				                           numstart, numlen, cat);
+				if (hlen > 0) {
+					if (pos + (size_t)hlen + 1 > bufsize) {
+						bufsize = pos + hlen + 256;
+						buf = realloc(buf, bufsize);
+						if (!buf) return NULL;
+					}
+					memcpy(buf + pos, human_buf, hlen);
+					pos += hlen;
+				} else {
+					/* No transformation — copy original */
+					memcpy(buf + pos, numstart, numlen);
+					pos += numlen;
+				}
+				last_key = NULL;
+				continue;
+			}
+
+			/* No category match — copy number as-is */
+			last_key = NULL;
+			buf[pos++] = *p++;
+			continue;
+		}
+
+		/* Reset expect_value on non-whitespace that isn't a number */
+		if (expect_value && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
+			expect_value = 0;
+			last_key = NULL;
+		}
+
+		buf[pos++] = *p++;
+	}
+
+	buf[pos] = '\0';
+	return buf;
 }

@@ -26,4 +26,10 @@ int format_table(FILE *out, const char *json);
  */
 int format_csv(FILE *out, const char *json);
 
+/* Humanize JSON values: timestamps to dates, byte sizes to KB/MB/GB,
+ * durations to d/h/m, large numbers to K/M/B/T, progress to %.
+ * Returns malloc'd string with transformed output. Caller frees.
+ */
+char *format_human(const char *json);
+
 #endif

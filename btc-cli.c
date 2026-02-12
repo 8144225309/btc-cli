@@ -23,7 +23,6 @@
 #include "fallback.h"
 #include "format.h"
 #include "completions.h"
-#include "repl.h"
 
 #define BTC_CLI_VERSION "0.10.0"
 
@@ -1107,7 +1106,7 @@ int main(int argc, char **argv)
 	/* Check for special info commands that don't need a command argument */
 	int need_command = 1;
 	if (cfg.getinfo || cfg.netinfo >= 0 || cfg.addrinfo || cfg.generate ||
-	    cfg.batch_mode || cfg.shell_mode) {
+	    cfg.batch_mode) {
 		need_command = 0;
 	}
 
@@ -1122,14 +1121,8 @@ int main(int argc, char **argv)
 	/* Find command in registry (if not using special flags) */
 	if (need_command) {
 		command = argv[cfg.cmd_index];
-		/* "shell" command activates REPL */
-		if (strcmp(command, "shell") == 0) {
-			cfg.shell_mode = 1;
-			need_command = 0;
-		} else {
-			method = method_find(command);
-			/* Unknown methods are forwarded to the server (like bitcoin-cli) */
-		}
+		method = method_find(command);
+		/* Unknown methods are forwarded to the server (like bitcoin-cli) */
 	}
 
 	/* Initialize RPC client */
@@ -1442,13 +1435,6 @@ int main(int argc, char **argv)
 		return ret;
 	}
 
-	/* Handle interactive REPL */
-	if (cfg.shell_mode) {
-		ret = repl_run(&rpc);
-		rpc_disconnect(&rpc);
-		return ret;
-	}
-
 	/* Set named parameter mode if requested */
 	if (cfg.named)
 		method_set_named_mode(1);
@@ -1609,11 +1595,6 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/* Handle -empty flag: print note when result is null */
-	if (!result && ret == 0 && cfg.empty_flag) {
-		fprintf(stderr, "(empty response)\n");
-	}
-
 	/* Apply -field extraction */
 	if (result && cfg.field[0] && ret == 0) {
 		const char *p = result;
@@ -1628,6 +1609,19 @@ int main(int argc, char **argv)
 				free(result);
 				result = NULL;
 				ret = 1;
+			}
+		}
+	}
+
+	/* Apply -human transformation */
+	if (result && cfg.human && ret == 0) {
+		const char *rp = result;
+		while (*rp == ' ' || *rp == '\t' || *rp == '\n') rp++;
+		if (*rp == '{' || *rp == '[') {
+			char *humanized = format_human(result);
+			if (humanized) {
+				free(result);
+				result = humanized;
 			}
 		}
 	}
