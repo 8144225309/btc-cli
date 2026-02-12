@@ -2200,7 +2200,14 @@ fi
 
 # I21: -watch=N (verify it produces output, kill after 2s)
 subsection "I21: -watch=N"
-WATCH_OUT=$(timeout 3 "$BTC_CLI" $CONN_ARGS -watch=1 getblockcount 2>/dev/null) || true
+WATCH_TMP="/tmp/parity-watch-$$"
+"$BTC_CLI" $CONN_ARGS -watch=1 getblockcount > "$WATCH_TMP" 2>/dev/null &
+WATCH_PID=$!
+sleep 2
+kill "$WATCH_PID" 2>/dev/null || true
+wait "$WATCH_PID" 2>/dev/null || true
+WATCH_OUT=$(cat "$WATCH_TMP" 2>/dev/null) || true
+rm -f "$WATCH_TMP"
 if [ -n "$WATCH_OUT" ]; then
     pass "I21.01 -watch=1 produces output"
 else
