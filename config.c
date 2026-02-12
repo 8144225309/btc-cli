@@ -97,6 +97,10 @@ static int parse_option(Config *cfg, const char *arg)
 		cfg->version = 1;
 		return 1;
 	}
+	if (strcmp(arg, "-version=btc-cli") == 0) {
+		cfg->version = 2;
+		return 1;
+	}
 	if (strcmp(arg, "-rpcwait") == 0) {
 		cfg->rpcwait = 1;
 		return 1;
@@ -312,7 +316,7 @@ static int parse_option(Config *cfg, const char *arg)
 static const char *known_flags[] = {
 	"-signet", "-testnet", "-regtest", "-mainnet", "-testnet4",
 	"-named", "-stdin", "-help", "-getinfo", "-netinfo", "-addrinfo",
-	"-generate", "-version", "-rpcwait", "-stdinrpcpass",
+	"-generate", "-version", "-version=", "-rpcwait", "-stdinrpcpass",
 	"-stdinwalletpassphrase", "-color", "-verify", "-human",
 	"-sats", "-batch",
 	"-rpcconnect=", "-rpcport=", "-rpcuser=", "-rpcpassword=",
@@ -647,6 +651,9 @@ void config_print_usage(const char *prog)
 	"\n"
 	"  -fallback-all\n"
 	"       Enable all fallback broadcast methods\n"
+	"\n"
+	"  -version=btc-cli\n"
+	"       Show btc-cli version and exit\n"
 	"\n"
 	"  -help=<command>\n"
 	"       Show help for a specific RPC command\n"

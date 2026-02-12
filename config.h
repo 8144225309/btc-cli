@@ -65,7 +65,7 @@ typedef struct {
 	int netinfo;     /* -1=off, 0-4=detail level */
 	int addrinfo;    /* Show address counts by network */
 	int generate;    /* Generate blocks convenience command */
-	int version;     /* Show version and exit */
+	int version;     /* 1=bitcoin-cli version, 2=btc-cli version */
 	int rpcwait;     /* Wait for RPC server to start */
 	int rpcwait_timeout;  /* Timeout for rpcwait (seconds, 0=forever) */
 	int stdinrpcpass;  /* Read RPC password from stdin */

@@ -24,7 +24,7 @@
 #include "format.h"
 #include "completions.h"
 
-#define BTC_CLI_VERSION "0.10.0"
+#define BTC_CLI_VERSION "0.11.0"
 
 /* ANSI color codes */
 #define C_RESET   "\033[0m"
@@ -1075,8 +1075,12 @@ int main(int argc, char **argv)
 	/* COLOR_NEVER: use_color stays 0 */
 
 	/* Show version if requested */
-	if (cfg.version) {
+	if (cfg.version == 1) {
 		print_version();
+		return 0;
+	}
+	if (cfg.version == 2) {
+		printf("btc-cli v%s (compatible with Bitcoin Core RPC client v30.2.0)\n", BTC_CLI_VERSION);
 		return 0;
 	}
 

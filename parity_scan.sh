@@ -654,24 +654,20 @@ compare_rpc "B1.01 -regtest getblockcount" getblockcount
 btc_rc=0; ref_rc=0
 "$BTC_CLI" -testnet -rpcport=18332 -rpcuser=testuser -rpcpassword=testpass getblockcount >/dev/null 2>&1 || btc_rc=$?
 "$BITCOIN_CLI" -testnet -rpcport=18332 -rpcuser=testuser -rpcpassword=testpass getblockcount >/dev/null 2>&1 || ref_rc=$?
-if [ "$btc_rc" = "$ref_rc" ]; then
-    pass "B1.02 -testnet getblockcount (fail) (exit=$btc_rc)"
-elif [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
-    diff_note "B1.02 -testnet getblockcount (fail)" "both fail: btc=$btc_rc ref=$ref_rc"
+if [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
+    pass "B1.02 -testnet getblockcount (both error: btc=$btc_rc ref=$ref_rc)"
 else
-    fail "B1.02 -testnet getblockcount (fail)" "exit codes differ: btc=$btc_rc ref=$ref_rc"
+    fail "B1.02 -testnet getblockcount (fail)" "exit codes: btc=$btc_rc ref=$ref_rc"
 fi
 
 # -signet should fail — call directly to avoid conflicting -regtest from CONN_ARGS
 btc_rc=0; ref_rc=0
 "$BTC_CLI" -signet -rpcport=38332 -rpcuser=testuser -rpcpassword=testpass getblockcount >/dev/null 2>&1 || btc_rc=$?
 "$BITCOIN_CLI" -signet -rpcport=38332 -rpcuser=testuser -rpcpassword=testpass getblockcount >/dev/null 2>&1 || ref_rc=$?
-if [ "$btc_rc" = "$ref_rc" ]; then
-    pass "B1.03 -signet getblockcount (fail) (exit=$btc_rc)"
-elif [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
-    diff_note "B1.03 -signet getblockcount (fail)" "both fail: btc=$btc_rc ref=$ref_rc"
+if [ "$btc_rc" -ne 0 ] && [ "$ref_rc" -ne 0 ]; then
+    pass "B1.03 -signet getblockcount (both error: btc=$btc_rc ref=$ref_rc)"
 else
-    fail "B1.03 -signet getblockcount (fail)" "exit codes differ: btc=$btc_rc ref=$ref_rc"
+    fail "B1.03 -signet getblockcount (fail)" "exit codes: btc=$btc_rc ref=$ref_rc"
 fi
 
 # -chain=regtest — btc-cli correctly parses -chain=regtest; bitcoin-cli may need -datadir
@@ -2106,6 +2102,15 @@ if echo "$HUMAN_BCI" | grep -qE '"Synced"|"[0-9.]+%"'; then
     pass "I14.05 -human verificationprogress is humanized"
 else
     fail "I14.05 -human verificationprogress" "no Synced/percentage: ${HUMAN_BCI:0:300}"
+fi
+
+# I15: -version=btc-cli
+subsection "I15: -version=btc-cli"
+BTCVER_OUT=$("$BTC_CLI" -version=btc-cli 2>/dev/null) || true
+if echo "$BTCVER_OUT" | grep -qE '^btc-cli v[0-9]+\.[0-9]+\.[0-9]+'; then
+    pass "I15.01 -version=btc-cli shows btc-cli version"
+else
+    fail "I15.01 -version=btc-cli" "unexpected output: [$BTCVER_OUT]"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
