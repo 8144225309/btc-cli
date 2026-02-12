@@ -24,7 +24,7 @@
 #include "format.h"
 #include "completions.h"
 
-#define BTC_CLI_VERSION "0.11.0"
+#define BTC_CLI_VERSION "0.12.0"
 
 /* ANSI color codes */
 #define C_RESET   "\033[0m"
@@ -589,6 +589,161 @@ static int handle_getinfo(RpcClient *rpc, const char *wallet_name, int human)
 	return 0;
 }
 
+/* Handle -health: node health summary */
+static int handle_health(RpcClient *rpc)
+{
+	char *bc_resp, *net_resp, *mp_resp;
+	char chain[64] = {0};
+	int blocks = 0, connections = 0;
+	int ibd = 0, mp_size = 0;
+	int64_t mp_bytes = 0;
+	double vp = 0;
+	int64_t mediantime = 0;
+	char subversion[256] = {0};
+
+	bc_resp = rpc_call(rpc, "getblockchaininfo", "[]");
+	net_resp = rpc_call(rpc, "getnetworkinfo", "[]");
+	mp_resp = rpc_call(rpc, "getmempoolinfo", "[]");
+
+	if (!bc_resp) {
+		fprintf(stderr, "error: Could not query node\n");
+		free(net_resp);
+		free(mp_resp);
+		return 1;
+	}
+
+	/* Parse blockchain info from result */
+	{
+		const char *r = json_find_value(bc_resp, "result");
+		if (r && *r == '{') {
+			json_get_string(r, "chain", chain, sizeof(chain));
+			blocks = (int)json_get_int(r, "blocks");
+			vp = json_get_double(r, "verificationprogress");
+			mediantime = json_get_int(r, "mediantime");
+			const char *ibd_val = json_find_value(r, "initialblockdownload");
+			if (ibd_val && strncmp(ibd_val, "true", 4) == 0) ibd = 1;
+		}
+	}
+
+	if (net_resp) {
+		const char *r = json_find_value(net_resp, "result");
+		if (r && *r == '{') {
+			connections = (int)json_get_int(r, "connections");
+			json_get_string(r, "subversion", subversion, sizeof(subversion));
+		}
+	}
+
+	if (mp_resp) {
+		const char *r = json_find_value(mp_resp, "result");
+		if (r && *r == '{') {
+			mp_size = (int)json_get_int(r, "size");
+			mp_bytes = json_get_int(r, "bytes");
+		}
+	}
+
+	int synced = !ibd && vp >= 0.9999;
+
+	/* Format mempool bytes */
+	char mp_str[64];
+	if (mp_bytes >= 1024 * 1024)
+		snprintf(mp_str, sizeof(mp_str), "%.1f MB", (double)mp_bytes / (1024 * 1024));
+	else if (mp_bytes >= 1024)
+		snprintf(mp_str, sizeof(mp_str), "%.1f KB", (double)mp_bytes / 1024);
+	else
+		snprintf(mp_str, sizeof(mp_str), "%d B", (int)mp_bytes);
+
+	/* Compute last block age */
+	char age_str[64] = "unknown";
+	if (mediantime > 0) {
+		int64_t age = (int64_t)time(NULL) - mediantime;
+		if (age < 0) age = 0;
+		if (age >= 86400)
+			snprintf(age_str, sizeof(age_str), "%dd %dh ago", (int)(age / 86400), (int)((age % 86400) / 3600));
+		else if (age >= 3600)
+			snprintf(age_str, sizeof(age_str), "%dh %dm ago", (int)(age / 3600), (int)((age % 3600) / 60));
+		else if (age >= 60)
+			snprintf(age_str, sizeof(age_str), "%dm ago", (int)(age / 60));
+		else
+			snprintf(age_str, sizeof(age_str), "%ds ago", (int)age);
+	}
+
+	printf("Chain: %s | Synced: %s | Blocks: %d | Peers: %d | Mempool: %d txs (%s) | Last block: %s\n",
+	       chain, synced ? "Yes" : "No", blocks, connections, mp_size, mp_str, age_str);
+
+	free(bc_resp);
+	free(net_resp);
+	free(mp_resp);
+
+	/* Exit 0 if healthy, 1 if not */
+	return (synced && connections > 0) ? 0 : 1;
+}
+
+/* Handle -progress: sync progress display */
+static int handle_progress(RpcClient *rpc)
+{
+	char *bc_resp;
+	int blocks = 0, headers = 0;
+	double vp = 0;
+	int ibd = 0;
+	char bestblockhash[128] = {0};
+
+	bc_resp = rpc_call(rpc, "getblockchaininfo", "[]");
+	if (!bc_resp) {
+		fprintf(stderr, "error: Could not query node\n");
+		return 1;
+	}
+
+	{
+		const char *r = json_find_value(bc_resp, "result");
+		if (r && *r == '{') {
+			blocks = (int)json_get_int(r, "blocks");
+			headers = (int)json_get_int(r, "headers");
+			vp = json_get_double(r, "verificationprogress");
+			json_get_string(r, "bestblockhash", bestblockhash, sizeof(bestblockhash));
+			const char *ibd_val = json_find_value(r, "initialblockdownload");
+			if (ibd_val && strncmp(ibd_val, "true", 4) == 0) ibd = 1;
+		}
+	}
+	free(bc_resp);
+
+	/* Get tip block date via getblockheader */
+	char block_date[64] = {0};
+	if (bestblockhash[0]) {
+		char params[256];
+		snprintf(params, sizeof(params), "[\"%s\"]", bestblockhash);
+		char *hdr_resp = rpc_call(rpc, "getblockheader", params);
+		if (hdr_resp) {
+			const char *r = json_find_value(hdr_resp, "result");
+			if (r && *r == '{') {
+				int64_t btime = json_get_int(r, "time");
+				if (btime > 0) {
+					time_t t = (time_t)btime;
+					struct tm *tm = gmtime(&t);
+					if (tm)
+						strftime(block_date, sizeof(block_date), "%Y-%m-%d %H:%M:%S UTC", tm);
+				}
+			}
+			free(hdr_resp);
+		}
+	}
+
+	int synced = !ibd && vp >= 0.9999;
+
+	if (synced) {
+		printf("Synced at block %d (100.00%%)", blocks);
+	} else {
+		int remaining = headers > blocks ? headers - blocks : 0;
+		printf("Syncing: %d / %d blocks (%.2f%%) — %d remaining",
+		       blocks, headers, vp * 100.0, remaining);
+	}
+
+	if (block_date[0])
+		printf(" — tip: %s", block_date);
+
+	printf("\n");
+	return 0;
+}
+
 /* Peer info struct for netinfo table */
 typedef struct {
 	int is_inbound;
@@ -1110,7 +1265,7 @@ int main(int argc, char **argv)
 	/* Check for special info commands that don't need a command argument */
 	int need_command = 1;
 	if (cfg.getinfo || cfg.netinfo >= 0 || cfg.addrinfo || cfg.generate ||
-	    cfg.batch_mode) {
+	    cfg.batch_mode || cfg.health || cfg.progress) {
 		need_command = 0;
 	}
 
@@ -1186,6 +1341,22 @@ int main(int argc, char **argv)
 				fprintf(stderr, "warning: Could not connect to %s:%d — using fallbacks\n",
 				        cfg.host, cfg.port);
 			} else {
+				/* Offline help: if command is "help", use method registry */
+				if (command && strcmp(command, "help") == 0) {
+					int cmd_argc = argc - cfg.cmd_index - 1;
+					char **cmd_argv = &argv[cfg.cmd_index + 1];
+					if (cmd_argc > 0 && cmd_argv[0]) {
+						const MethodDef *m = method_find(cmd_argv[0]);
+						if (m) {
+							method_print_help(m);
+							return 0;
+						}
+						fprintf(stderr, "Unknown command: %s\n", cmd_argv[0]);
+						return 1;
+					}
+					method_list_all();
+					return 0;
+				}
 				fprintf(stderr, "error: timeout on transient error: Could not connect to the server %s:%d\n\nMake sure the bitcoind server is running and that you are connecting to the correct RPC port.\nUse \"bitcoin-cli -help\" for more info.\n", cfg.host, cfg.port);
 				return 28;  /* Connection refused */
 			}
@@ -1316,6 +1487,16 @@ int main(int argc, char **argv)
 	}
 	if (cfg.generate) {
 		ret = handle_generate(&rpc, argc, argv, cfg.cmd_index);
+		rpc_disconnect(&rpc);
+		return ret;
+	}
+	if (cfg.health) {
+		ret = handle_health(&rpc);
+		rpc_disconnect(&rpc);
+		return ret;
+	}
+	if (cfg.progress) {
+		ret = handle_progress(&rpc);
 		rpc_disconnect(&rpc);
 		return ret;
 	}
@@ -1550,6 +1731,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	do { /* -watch=N loop: execute, format, output, repeat */
+
 	/* Execute command handler */
 	if (method) {
 		ret = method->handler(&rpc, all_argc, all_argv, &result);
@@ -1574,11 +1757,45 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/* Cleanup stdin resources */
-	if (stdin_buf) free(stdin_buf);
-	if (stdin_args) free(stdin_args);
-	if (all_argv != cmd_argv) free(all_argv);
-	if (wp_argv) free(wp_argv);
+	/* Handle -wait=N: poll until confirmations >= N */
+	if (cfg.wait_confirms > 0 && ret == 0 && result) {
+		while (1) {
+			const char *rp = result;
+			while (*rp == ' ' || *rp == '\t' || *rp == '\n') rp++;
+			if (*rp == '{') {
+				int64_t confs = json_get_int(rp, "confirmations");
+				if (confs >= cfg.wait_confirms)
+					break;
+				fprintf(stderr, "Waiting for %d confirmations... (currently %d)\n",
+				        cfg.wait_confirms, (int)confs);
+			} else {
+				break;  /* Not a JSON object, can't check confirmations */
+			}
+
+			sleep(2);
+
+			/* Re-execute command */
+			free(result);
+			result = NULL;
+			if (method) {
+				ret = method->handler(&rpc, all_argc, all_argv, &result);
+			} else {
+				char *params = build_raw_params(all_argc, all_argv);
+				char *response = rpc_call(&rpc, command, params ? params : "[]");
+				free(params);
+				if (response) {
+					int error_code;
+					result = method_extract_result(response, &error_code);
+					free(response);
+					ret = error_code != 0 ? abs(error_code) : 0;
+				} else {
+					ret = 28;
+					break;
+				}
+			}
+			if (ret != 0) break;
+		}
+	}
 
 	/* Special output handling for createwallet/loadwallet:
 	 * bitcoin-cli extracts just the "name" field, prints warning if any */
@@ -1674,12 +1891,14 @@ int main(int argc, char **argv)
 		if (cfg.format == 1 && *p == '[' && ret == 0) {
 			if (format_table(dest, result) == 0) {
 				free(result);
-				goto done;
+				result = NULL;
+				goto watch_next;
 			}
 		} else if (cfg.format == 2 && *p == '[' && ret == 0) {
 			if (format_csv(dest, result) == 0) {
 				free(result);
-				goto done;
+				result = NULL;
+				goto watch_next;
 			}
 		}
 
@@ -1691,9 +1910,37 @@ int main(int argc, char **argv)
 			fprintf(dest, "%s\n", result);
 		}
 		free(result);
+		result = NULL;
 	}
 
-done:
+watch_next:
+	/* -watch=N: sleep and repeat */
+	if (cfg.watch_interval > 0 && ret == 0) {
+		fflush(stdout);
+		sleep(cfg.watch_interval);
+		/* Clear screen and print timestamp header */
+		printf("\033[H\033[2J");
+		{
+			time_t now = time(NULL);
+			struct tm *tm = localtime(&now);
+			char tbuf[32];
+			if (tm)
+				strftime(tbuf, sizeof(tbuf), "%H:%M:%S", tm);
+			else
+				snprintf(tbuf, sizeof(tbuf), "?");
+			printf("Every %ds: %s  [%s]\n\n", cfg.watch_interval,
+			       command ? command : "", tbuf);
+		}
+	}
+
+	} while (cfg.watch_interval > 0 && ret == 0);
+
+	/* Cleanup stdin resources */
+	if (stdin_buf) free(stdin_buf);
+	if (stdin_args) free(stdin_args);
+	if (all_argv != cmd_argv) free(all_argv);
+	if (wp_argv) free(wp_argv);
+
 	/* Cleanup */
 	rpc_disconnect(&rpc);
 	memset(wallet_passphrase, 0, sizeof(wallet_passphrase));
