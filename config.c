@@ -161,10 +161,6 @@ static int parse_option(Config *cfg, const char *arg)
 		cfg->color = COLOR_NEVER;
 		return 1;
 	}
-	if (strcmp(arg, "-empty") == 0) {
-		cfg->empty_flag = 1;
-		return 1;
-	}
 	if (strcmp(arg, "-human") == 0) {
 		cfg->human = 1;
 		return 1;
@@ -317,7 +313,7 @@ static const char *known_flags[] = {
 	"-signet", "-testnet", "-regtest", "-mainnet", "-testnet4",
 	"-named", "-stdin", "-help", "-getinfo", "-netinfo", "-addrinfo",
 	"-generate", "-version", "-rpcwait", "-stdinrpcpass",
-	"-stdinwalletpassphrase", "-color", "-verify", "-empty", "-human",
+	"-stdinwalletpassphrase", "-color", "-verify", "-human",
 	"-sats", "-batch",
 	"-rpcconnect=", "-rpcport=", "-rpcuser=", "-rpcpassword=",
 	"-rpccookiefile=", "-rpcwallet=", "-datadir=", "-conf=",
@@ -612,20 +608,15 @@ void config_print_usage(const char *prog)
 	"  -sats\n"
 	"       Display BTC amounts as satoshis\n"
 	"\n"
-	"  -empty\n"
-	"       Print \"(empty response)\" to stderr when result is null\n"
-	"\n"
 	"  -human\n"
-	"       Human-friendly -getinfo output (e.g., \"Synced\" instead of 99.99%%)\n"
+	"       Humanize values: timestamps to dates, bytes to KB/MB/GB,\n"
+	"       durations to d/h/m, large numbers to K/M/B/T, progress to %%\n"
 	"\n"
 	"  -batch\n"
 	"       Read commands from stdin (one per line), send as JSON-RPC batch\n"
 	"\n"
 	"  -completions=<shell>\n"
 	"       Generate shell completion script (bash, zsh, or fish)\n"
-	"\n"
-	"  shell\n"
-	"       Start interactive REPL with line editing and history\n"
 	"\n"
 	"  -verify\n"
 	"       Verify transaction propagation via P2P peers\n"
